@@ -1,0 +1,16 @@
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults   # never fall back to `defaults`/`anaconda` (licensing + not on the cluster)
+dependencies:
+  - python=3.11
+  - diamond=2.1.9
+  - mmseqs2=15.6f452
+  - seqkit=2.8.2
+  - python-igraph=0.11
+  - numpy=1.26
+  - pandas=2.2
+  - scipy=1.13
+  - scikit-learn=1.5
+  - matplotlib-base=3.8
+  - pyyaml=6.0

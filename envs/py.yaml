@@ -1,0 +1,16 @@
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults   # never fall back to `defaults`/`anaconda` (licensing + not on the cluster)
+dependencies:
+  - python=3.11
+  - numpy=1.26
+  - pandas=2.2
+  - scipy=1.13
+  - scikit-learn=1.5          # provides cluster.HDBSCAN
+  - matplotlib-base=3.8
+  - biopython=1.83
+  - logomaker=0.8
+  - statsmodels=0.14
+  - pyarrow=16
+  - pyyaml=6.0

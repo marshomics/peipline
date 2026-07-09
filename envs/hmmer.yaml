@@ -1,0 +1,8 @@
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults   # never fall back to `defaults`/`anaconda` (licensing + not on the cluster)
+dependencies:
+  - hmmer=3.4
+  - python=3.11
+  - pandas=2.2

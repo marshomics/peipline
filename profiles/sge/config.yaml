@@ -1,0 +1,157 @@
+# ============================================================================
+# Snakemake >= 8 profile for this SGE 8.1.9 cluster.
+#   pip install snakemake-executor-plugin-cluster-generic
+#
+# Tuned from sge_probe_report (2026-07-06). The facts that matter:
+#
+#   PE `parallel` is $pe_slots  -> all slots on one host. Correct: every
+#                                  threaded tool here (hmmsearch, iqtree,
+#                                  diamond, mmseqs) forks on a single node.
+#   PE `openmpi`  is $round_robin -> would scatter slots across hosts. Never use.
+#
+#   h_vmem: requestable YES, CONSUMABLE YES -> requested PER SLOT.
+#           submit.sh divides the per-job mem_mb by the slot count. Do not put
+#           `-l h_vmem` back into a bare qsub line here; it will over-request by
+#           a factor of `threads`.
+#
+#   Queue walltimes:  standard.q  h_rt 24:00:00  (s_rt 23:55:00), 865 slots free
+#                     long.q      h_rt 672:00:00,                 1265 free
+#                     cryo-em.q   h_rt 672:00:00,                  576 free, idle
+#                     test.q      unlimited,                        64 slots
+#           standard.q rejects anything over 24h, so the long rules are routed
+#           to long.q explicitly and submit.sh promotes any that slip through.
+#
+#   Hosts: 30 nodes, 32-256 cores, 504 GB - 2 TB RAM. The smallest is 32 cores,
+#          so submit.sh caps slots at 32 (SGE_MAX_SLOTS) to keep the eligible
+#          host set wide. Asking for 64 would restrict to ~9 nodes.
+#
+#   Limits: max_u_jobs 30000, max_jobs 50000. Nowhere near binding: the fused
+#           search_batch rule is ~365 jobs, not the 2,920 the split version was.
+#
+# Before running: SGE_ROOT is unset in a fresh shell on this cluster. Source the
+# SGE settings file first, or qstat/qacct will not be found by status.sh.
+# ============================================================================
+
+executor: cluster-generic
+cluster-generic-submit-cmd: "profiles/sge/submit.sh {rule} {threads} {resources.mem_mb} {resources.h_rt} {resources.queue}"
+cluster-generic-status-cmd: profiles/sge/status.sh
+cluster-generic-cancel-cmd: qdel
+
+# 865 free slots on standard.q. search_batch takes 8 -> ~100 concurrent search
+# jobs saturates it. Leave headroom for other users; raise if the queue is idle.
+jobs: 100
+latency-wait: 120
+restart-times: 2
+max-jobs-per-second: 5
+max-status-checks-per-second: 2
+keep-going: true
+rerun-incomplete: true
+printshellcmds: true
+
+# NOTE: software-deployment-method is deliberately NOT set here.
+# run.sh decides: if `envs_root` is set in config.yaml the environments are
+# pre-built and snakemake must not try to solve or create any (the compute nodes
+# have no internet). If envs_root is null, run.sh passes
+# `--software-deployment-method conda`. Setting it in this profile would
+# override that and make every job attempt a download.
+
+# mem_mb is the TOTAL memory for the job. submit.sh converts it to per-slot
+# h_vmem. h_rt is a string, deliberately not snakemake's `runtime` (minutes),
+# so it passes through to qsub verbatim.
+default-resources:
+  - mem_mb=8000
+  - h_rt="'04:00:00'"
+  - queue="'standard.q'"
+
+set-threads:
+  prodigal: 1
+  search_batch: 8
+  extract_hits: 8
+  c71_faa: 8
+  seq_weights: 16
+  tree_input: 8
+  iqtree: 32
+  active_site: 8
+  ssn_align: 32
+  phyloglm: 1          # phylolm is single-threaded; extra slots just idle
+
+set-resources:
+  # ---- short, high-count: standard.q -------------------------------------
+  prodigal:
+    mem_mb: 4000
+    h_rt: "04:00:00"
+  unified_table:
+    mem_mb: 32000
+    h_rt: "04:00:00"
+  # ~365 jobs. Reads ~1 GB of proteomes, writes only tables. Scratch is $TMPDIR.
+  search_batch:
+    mem_mb: 16000       # 2 GB/slot at 8 slots
+    h_rt: "08:00:00"
+  combine_filter:
+    mem_mb: 64000
+    h_rt: "12:00:00"
+  merge_metadata:
+    mem_mb: 32000
+    h_rt: "04:00:00"
+  extract_hits:
+    mem_mb: 16000
+    h_rt: "08:00:00"
+  seq_weights:
+    mem_mb: 48000
+    h_rt: "12:00:00"
+  triad:
+    mem_mb: 64000
+    h_rt: "06:00:00"
+  c71_faa:
+    mem_mb: 16000
+    h_rt: "04:00:00"
+  tree_input:
+    mem_mb: 32000
+    h_rt: "12:00:00"
+  active_site:
+    mem_mb: 48000
+    h_rt: "12:00:00"
+  coupling:
+    mem_mb: 16000
+    h_rt: "12:00:00"
+  ssn:
+    mem_mb: 32000
+    h_rt: "06:00:00"
+  convergence:
+    mem_mb: 16000
+    h_rt: "12:00:00"
+  genome_table:
+    mem_mb: 32000
+    h_rt: "04:00:00"
+  plots_overview:
+    mem_mb: 16000
+    h_rt: "04:00:00"
+  plot_tree:
+    mem_mb: 16000
+    h_rt: "04:00:00"
+  report:
+    mem_mb: 8000
+    h_rt: "01:00:00"
+
+  # ---- long: long.q (standard.q caps at 24h) ------------------------------
+  # hmmalign is single-threaded and streams every hit sequence through the
+  # profile. At 10^5-10^6 hits this runs for many hours.
+  hmmalign:
+    mem_mb: 64000
+    h_rt: "72:00:00"
+    queue: "long.q"
+  # ModelFinder + 1000 UFBoot on a few thousand tips. Days, not hours.
+  iqtree:
+    mem_mb: 128000      # 4 GB/slot at 32 slots
+    h_rt: "168:00:00"
+    queue: "long.q"
+  # DIAMOND all-vs-all is O(n^2) in the node count.
+  ssn_align:
+    mem_mb: 128000
+    h_rt: "48:00:00"
+    queue: "long.q"
+  # phyloglm builds an n x n covariance per replicate; 20 replicates serially.
+  phyloglm:
+    mem_mb: 96000
+    h_rt: "48:00:00"
+    queue: "long.q"

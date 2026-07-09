@@ -1,0 +1,11 @@
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults   # never fall back to `defaults`/`anaconda` (licensing + not on the cluster)
+dependencies:
+  - r-base=4.3
+  - r-ape=5.8
+  - r-phylolm=2.6.5     # phyloglm: Ives & Garland logistic_MPLE
+  - r-caper=1.0.3       # phylo.d: Fritz & Purvis D for binary traits
+  - r-data.table=1.15
+  - r-yaml=2.3
