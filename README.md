@@ -27,20 +27,39 @@ Snakemake's own conda machinery is never used on the cluster: if `envs_root` is
 set in `config.yaml`, every rule activates a pre-built environment and nothing
 is ever downloaded or solved.
 
-Six environments: `hmmer`, `prodigal`, `phylo`, `network`, `py`, `r`.
-All six are built from **conda-forge and bioconda only**. Every `envs/*.yaml`
-carries `- nodefaults`, and `build_envs.sh` passes `--override-channels` with
-`CONDA_CHANNEL_PRIORITY=strict`. Either alone can be undone by a stray
-`~/.condarc`; both together cannot.
+Seven environments: `hmmer`, `prodigal`, `phylo`, `network`, `py`, `r`,
+`selection`. All are built from **conda-forge and bioconda only**. Every
+`envs/*.yaml` carries `- nodefaults`, and `build_envs.sh` passes
+`--override-channels` with `CONDA_CHANNEL_PRIORITY=strict`. Either alone can be
+undone by a stray `~/.condarc`; both together cannot.
 
-### Step 1, on a machine with internet
+### Pick one route, not both
+
+There are two ways to get the environments onto the cluster, and they are
+mutually exclusive. Do **not** run Steps 1–2 and the login-node route both.
+
+| | Route A — conda-pack (default) | Route B — login node has internet |
+|---|---|---|
+| When | The cluster, including the login node, cannot reach the internet | Your login node can reach conda-forge, and the compute nodes share its filesystem |
+| Build | Step 1 `build_envs.sh` on a separate internet machine | `snakemake --conda-create-envs-only` on the login node |
+| Ship | Step 2 `install_envs.sh` on the cluster | nothing to ship; compute nodes reuse the login node's prefix |
+| `config.yaml` | `envs_root: /…/c71_envs` | `envs_root: null` |
+| Profile | leave as shipped | add `conda-prefix: /…` |
+
+Both routes then run the same **Step 3** (preflight → dry → cluster). Route A is
+the default because it works even when nothing on the cluster can reach the
+internet. If you take Route B, skip straight to
+["If your login node has internet"](#if-your-login-node-does-have-internet) and
+then do Step 3 with `envs_root` left `null`.
+
+### Route A, Step 1 — on a machine with internet
 
 ```bash
 git clone <repo> c71_pipeline && cd c71_pipeline
 ./setup/build_envs.sh ./dist
 ```
 
-This solves the six environments, packs each into a relocatable tarball with
+This solves the seven environments, packs each into a relocatable tarball with
 `conda-pack`, downloads the Snakemake wheels for offline `pip`, and writes an
 explicit package lock per environment into `dist/locks/`.
 
@@ -56,7 +75,7 @@ docker run --rm -v "$PWD":/w -w /w --platform linux/amd64 \
 Miniforge is the conda-forge-only installer. Using a stock Anaconda install as
 the build base is what pulls in `defaults` behind your back.
 
-### Step 2, on the cluster
+### Route A, Step 2 — on the cluster
 
 ```bash
 rsync -a dist/ user@cluster:/ebio/abt3_scratch/jmarsh/c71_dist/
@@ -76,11 +95,16 @@ if anything is missing, before you have burned any queue time.
 Put `envs_root` on a filesystem the compute nodes can read. `/tmp` on the submit
 host is not one.
 
-### Step 3
+### Step 3 — both routes
+
+Set `envs_root` to match the route you took:
 
 ```yaml
 # config.yaml
+# Route A (conda-pack):  the prefix install_envs.sh wrote to
 envs_root: /ebio/abt3_projects/software/c71_envs
+# Route B (login node):  leave it null
+# envs_root: null
 ```
 
 ```bash
@@ -90,14 +114,18 @@ python scripts/check_snakefile.py   # static wiring check, no snakemake needed
 ./run.sh cluster
 ```
 
-`run.sh` reads `envs_root` and decides for you: set, and it never passes
-`--software-deployment-method conda`; null, and it does. `profiles/sge/config.yaml`
-deliberately does **not** set that flag, because a profile setting would override
-`run.sh` and make all 700 array jobs attempt a download.
+`run.sh` reads `envs_root` and decides the deployment for you. Route A, with
+`envs_root` set: it never passes `--software-deployment-method conda`, so no job
+tries to download anything. Route B, with `envs_root` null: it passes that flag
+automatically, and the compute nodes reuse the prefix the login node built. You
+do **not** add the flag by hand. `profiles/sge/config.yaml` deliberately omits it,
+because a profile setting would override `run.sh` and make all 700 array jobs
+attempt a download.
 
 ### If your login node does have internet
 
-There is a simpler path. Leave `envs_root: null`, and pre-create the
+This is **Route B**, and it replaces Steps 1 and 2 — do not run `build_envs.sh`
+or `install_envs.sh` as well. Leave `envs_root: null`, and pre-create the
 environments once on the login node into a shared prefix:
 
 ```bash
@@ -106,10 +134,13 @@ snakemake --software-deployment-method conda --conda-frontend mamba \
           --conda-create-envs-only --cores 1
 ```
 
-Then add `conda-prefix:` to `profiles/sge/config.yaml` and pass
-`--software-deployment-method conda`. The compute nodes reuse what the login
-node built. The `conda-pack` route above works even when nothing on the cluster
-can reach the internet, which is why it is the default.
+Then add `conda-prefix:` (pointing at that same prefix) to
+`profiles/sge/config.yaml`. That is the only profile edit; `run.sh` supplies
+`--software-deployment-method conda` on its own because `envs_root` is null. The
+compute nodes reuse what the login node built. Then continue with Step 3 above.
+
+The Route A conda-pack path works even when nothing on the cluster can reach the
+internet, which is why it is the default.
 
 ### Versions
 
@@ -791,7 +822,7 @@ profiles/sge/
   config.yaml             per-rule slots, memory, walltime, queue
   submit.sh               per-slot h_vmem, queue routing, no -pe when threads=1
   status.sh               qstat/qacct probe (needs SGE_ROOT sourced)
-envs/                     hmmer, prodigal, phylo, network, py, r (all nodefaults)
+envs/                     hmmer, prodigal, phylo, network, py, r, selection (all nodefaults)
 scripts/
   check_snakefile.py      static wiring + SGE profile check; no snakemake needed
   preflight.py            validate every input path, column, tip label, HMM
