@@ -496,11 +496,15 @@ def check_specificity(cfg):
 
     # --- structure ----------------------------------------------------------
     st = s["structure"]
-    if check_readable(st, "PeiP structure"):
+    num = s.get("structure_numbering", "reference")
+    if check_readable(st, f"{num} structure ({os.path.basename(st)})"):
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
             from groove_map import parse_structure
-            res = parse_structure(st, s["structure_chain"])
+            # parse_structure returns (residues, ions); preflight only needs the
+            # residues. Unpacking is not optional -- `x not in (dict, list)` is
+            # always True, which would silently report every seed as missing.
+            res, _ions = parse_structure(st, s["structure_chain"])
             seeds = [int(x) + int(s.get("structure_offset", 0))
                      for x in s["groove_seed_residues"]]
             miss = [x for x in seeds if x not in res]

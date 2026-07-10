@@ -125,14 +125,41 @@ attempt a download.
 ### If your login node does have internet
 
 This is **Route B**, and it replaces Steps 1 and 2 — do not run `build_envs.sh`
-or `install_envs.sh` as well. Leave `envs_root: null`, and pre-create the
-environments once on the login node into a shared prefix:
+or `install_envs.sh` as well. Leave `envs_root: null`.
+
+**Stage the external inputs first, then run preflight, then create the envs.**
+`snakemake --conda-create-envs-only` builds the whole job graph before it makes a
+single environment, and the graph will not build until every *external* input —
+the files no rule produces — is present. A missing structure or HMM aborts env
+creation with a `MissingInputException`, which looks like a conda problem and is
+not. Preflight checks all of them in one pass and needs no envs, so run it first:
 
 ```bash
-snakemake --software-deployment-method conda --conda-frontend mamba \
+./run.sh preflight        # lists every missing input with the path it expected
+```
+
+The external inputs preflight validates (stage each before proceeding):
+
+| Input | config key | how to get it |
+|---|---|---|
+| PeiW-CD structure `8jx4.cif` | `specificity.structure` | `wget https://files.rcsb.org/download/8JX4.cif -O <path>/8jx4.cif` |
+| PF12386, SSF54001 HMMs | `profiles.*.path` | `hmmfetch` from Pfam / a SUPERFAMILY build |
+| Pfam-A.hmm | `specificity.pfam_hmm` | Pfam release, `hmmpress`ed |
+| Pmur marker HMMs | `specificity.pmur_hmm_dir` | your marker set |
+| geNomad DB | `specificity.genomad_db` | `genomad download-database` |
+| bacteria + archaea GTDB trees | `trees.*` | GTDB release |
+| sample table, metadata, archaeal `.fna` | `inputs.*` | your data |
+
+Then create the environments once, into a shared prefix:
+
+```bash
+snakemake --software-deployment-method conda \
           --conda-prefix /ebio/abt3_projects/software/c71_snakemake_envs \
           --conda-create-envs-only --cores 1
 ```
+
+(Drop `--conda-frontend mamba`: recent Snakemake ignores it and warns, because
+the classic conda solver already uses libmamba.)
 
 Then add `conda-prefix:` (pointing at that same prefix) to
 `profiles/sge/config.yaml`. That is the only profile edit; `run.sh` supplies
