@@ -31,14 +31,28 @@ Each informative column is independently shuffled, destroying coupling while
 preserving marginal composition (and therefore the finite-sample MI bias, which
 at 21 states and a few hundred sequences is larger than the signal).
 
-Significance is a z-score against the per-pair permutation null, not the raw
-permutation rank. With B permutations the smallest achievable rank-based p is
-1/(B+1); Benjamini-Hochberg over ~400 pairs then needs p < 1.2e-4 to reach
-q = 0.05, so B would have to exceed ~9,000 before any pair could ever be called
-significant. The z-score uses the null's mean and standard deviation rather than
-its tail rank, which gets resolution beyond 1/B out of the same B permutations.
-This is the standard treatment of MI_apc in the coevolution literature. The raw
-empirical p is reported alongside so the approximation is visible.
+Significance comes from a parametric tail fitted to the per-pair permutation
+null, not from the raw permutation rank. With B permutations the smallest
+achievable rank-based p is 1/(B+1); Benjamini-Hochberg over ~400 pairs then needs
+p < 1.2e-4 to reach q = 0.05, so B would have to exceed ~9,000 before any pair
+could ever be called significant.
+
+The tail is a moment-matched Gamma, NOT a z-score. Under independence,
+2*N*ln2*MI is approximately chi-square with (a-1)(b-1) df, where a and b are the
+numbers of residue states in the two columns. The barcode flanks a catalytic
+residue, so those columns are conserved, the df is small, and the null is
+strongly right-skewed. A normal tail on a right-skewed null understates the upper
+tail: on a chi-square(4) null the z gives p = 7.7e-7 where the truth is 1e-3, a
+factor of 2,400 anti-conservative, and every "significant" pair rests on it. The
+Gamma is fitted from three accumulated moments of the same permutations, matches
+the chi-square shape family, and degrades to the normal as the skew vanishes.
+
+`p_normal`, `p_empirical`, `null_skew` and `tail_model` are all reported so the
+approximation is auditable. The parametric p is floored at 1/(10*(B+1)): below
+that we are extrapolating past what the permutations can support.
+
+Gaps are excluded from the MI. A gap is not a residue state, and two columns
+co-deleted in one clade would otherwise register as coupled.
 
 Invariant columns (the three catalytic residues, fixed by the filter) have zero
 entropy, carry zero MI, and are excluded from the FDR denominator rather than
@@ -53,7 +67,7 @@ import sys
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
+from scipy.stats import gamma, norm
 from statsmodels.stats.multitest import multipletests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -75,7 +89,26 @@ def encode_int(barcodes):
     return A
 
 
+GAP = IDX["-"]
+
+
 def mi_pair(ai: np.ndarray, aj: np.ndarray) -> float:
+    """MI over the rows where BOTH columns carry a residue.
+
+    Gap was the 21st symbol. Two columns deleted together in one clade -- a single
+    shared indel, i.e. phylogenetic signal -- then produced high MI, and the
+    column-wise permutation preserved it because each column keeps its own gap
+    fraction. APC removes column-wise background but not a pairwise co-gap term.
+    With min_column_occupancy at 0.5 a column may be half gaps, so this was not
+    hypothetical.
+
+    Masking to the doubly-occupied rows makes the statistic what it claims to be:
+    covariation between residues.
+    """
+    m = (ai != GAP) & (aj != GAP)
+    if m.sum() < 2:
+        return 0.0
+    ai, aj = ai[m], aj[m]
     J = np.bincount(ai * K + aj, minlength=K * K).reshape(K, K).astype(float)
     tot = J.sum()
     if tot <= 0:
@@ -116,6 +149,8 @@ def main() -> None:
     ap.add_argument("--config", required=True)
     ap.add_argument("--figdir", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--contacts", help="Ca distance matrix over match columns")
+    ap.add_argument("--groove", help="groove_columns.tsv")
     a = ap.parse_args()
 
     cfg = load_config(a.config)
@@ -154,6 +189,7 @@ def main() -> None:
         w_flank = cfg["active_site"]["flank_window"]
         bounds = [[b * (2 * w_flank + 1), (b + 1) * (2 * w_flank + 1)] for b in range(3)]
         centres = [b * (2 * w_flank + 1) + w_flank for b in range(3)]
+        layout = {"centres": centres, "bounds": bounds}
 
     block = np.zeros(L, dtype=int)
     for bi, (lo, hi) in enumerate(bounds):
@@ -175,6 +211,7 @@ def main() -> None:
     ge = np.zeros_like(OBS)
     s1 = np.zeros_like(OBS)
     s2 = np.zeros_like(OBS)
+    s3 = np.zeros_like(OBS)
     Ap = A.copy()
     for b in range(B):
         for j in active:
@@ -183,16 +220,61 @@ def main() -> None:
         ge += (null >= OBS)
         s1 += null
         s2 += null ** 2
+        s3 += null ** 3
         if (b + 1) % max(1, B // 5) == 0:
             print(f"[coupling] permutation {b + 1}/{B}", file=sys.stderr)
 
     p_emp = (ge + 1.0) / (B + 1.0)
     mu = s1 / B
-    sd = np.sqrt(np.maximum(s2 / B - mu ** 2, 0.0))
+    var = np.maximum(s2 / B - mu ** 2, 0.0)
+    sd = np.sqrt(var)
     sd[sd <= 0] = np.nan
     Z = (OBS - mu) / sd
-    p_z = norm.sf(Z)                       # one-sided: coupling, not repulsion
-    p_z = np.where(np.isfinite(p_z), p_z, 1.0)
+
+    # The tail, and why it is not a z-test.
+    #
+    # Under independence, 2*N*ln2*MI is approximately chi-square with (a-1)(b-1)
+    # degrees of freedom, where a and b are the numbers of residue states in the
+    # two columns. The barcode flanks a catalytic residue, so those columns are
+    # conserved, a and b are small, the df is small, and the null is strongly
+    # RIGHT-SKEWED. norm.sf() on a right-skewed null understates the upper tail:
+    # p comes out too small and the count of "coupled" pairs is inflated. The
+    # empirical p cannot corroborate, because it has a 1/(B+1) floor that BH over
+    # ~400 pairs can never clear -- which is exactly why the z-score was reached
+    # for in the first place.
+    #
+    # So fit a shifted Gamma to each pair's own permutation null by method of
+    # moments (three accumulated moments, no extra permutations), and take the
+    # tail from that. A Gamma matches a chi-square's shape family and degrades to
+    # the normal as the skew goes to zero, so this is strictly better calibrated
+    # than the z and never worse.
+    m3 = s3 / B - 3.0 * mu * (s2 / B) + 2.0 * mu ** 3      # central third moment
+    with np.errstate(divide="ignore", invalid="ignore"):
+        skew = m3 / np.power(var, 1.5)
+        # Gamma(k, theta) shifted by loc: skew = 2/sqrt(k)
+        k = 4.0 / np.square(skew)
+        theta = np.sqrt(var / k)
+        loc = mu - k * theta
+        p_gamma = gamma.sf(OBS, a=k, loc=loc, scale=theta)
+
+    # Fall back to the normal only where the Gamma is undefined: a null with no
+    # variance, or a left-skewed one (which the chi-square argument forbids and
+    # which therefore indicates too few permutations, not a real shape).
+    usable = np.isfinite(p_gamma) & (skew > 1e-6) & np.isfinite(sd)
+    p_z = norm.sf(Z)
+    p = np.where(usable, p_gamma, p_z)
+    p = np.where(np.isfinite(p), p, 1.0)
+    # A parametric tail must never claim more than the permutations can support.
+    # Below the empirical floor we are extrapolating; say so by not going under it
+    # by more than an order of magnitude per decade of B.
+    p = np.maximum(p, 1.0 / (10.0 * (B + 1.0)))
+
+    n_gamma = int(usable[np.triu_indices_from(usable, 1)].sum())
+    n_pairs = len(active) * (len(active) - 1) // 2
+    print(f"[coupling] tail calibrated by a moment-matched Gamma for {n_gamma}/"
+          f"{n_pairs} pairs (median null skew "
+          f"{np.nanmedian(skew[np.triu_indices_from(skew, 1)]):.2f}); the rest "
+          f"fall back to the normal.", file=sys.stderr)
 
     rows = []
     for x in range(len(active)):
@@ -205,12 +287,77 @@ def main() -> None:
                          "mi_apc": float(OBS[x, y]),
                          "null_mean": float(mu[x, y]), "null_sd": float(sd[x, y]),
                          "z": float(Z[x, y]),
-                         "p": float(p_z[x, y]),
+                         "null_skew": float(skew[x, y]),
+                         "tail_model": "gamma" if usable[x, y] else "normal",
+                         "p": float(p[x, y]),
+                         "p_normal": float(p_z[x, y]),
                          "p_empirical": float(p_emp[x, y]),
                          "same_block": bool(block[i] == block[j])})
     df = pd.DataFrame(rows)
     df["q_bh"] = multipletests(df["p"], method="fdr_bh")[1]
     df["significant"] = df["q_bh"] < float(ccfg["fdr"])
+
+    # --- structural validation -----------------------------------------------
+    # A coupled pair that is 40 A apart in the structure is phylogenetic signal
+    # that APC failed to remove. A coupled pair that is adjacent, and in the
+    # substrate groove, is a co-adapted specificity surface. Without this check
+    # the coupling result is a statistic; with it, it is a claim about a protein.
+    contact_summary = {}
+    if a.contacts and a.groove and os.path.exists(a.contacts):
+        D = np.loadtxt(a.contacts, delimiter="\t")
+        gr = pd.read_csv(a.groove, sep="\t").set_index("match_col")
+        # barcode position -> alignment match column
+        bar2col = {p: c for p, c in enumerate(layout["alignment_columns"])} \
+            if "alignment_columns" in layout else {}
+        if bar2col:
+            ci = df["col_i"].map(bar2col)
+            cj = df["col_j"].map(bar2col)
+            df["align_col_i"], df["align_col_j"] = ci, cj
+            df["ca_distance_a"] = [
+                D[int(x), int(y)] if (pd.notna(x) and pd.notna(y)
+                                      and int(x) < D.shape[0] and int(y) < D.shape[0])
+                else np.nan for x, y in zip(ci, cj)]
+            rad = float(load_config(a.config)["specificity"]["contact_radius_a"])
+            df["in_contact"] = df["ca_distance_a"] <= rad
+            df["both_in_groove"] = [
+                bool(gr["in_groove"].get(x, 0)) and bool(gr["in_groove"].get(y, 0))
+                for x, y in zip(ci, cj)]
+
+            sig = df[df["significant"]]
+            has_d = df["ca_distance_a"].notna()
+            if has_d.any() and len(sig):
+                from scipy.stats import fisher_exact, mannwhitneyu
+                tab = pd.crosstab(df.loc[has_d, "significant"],
+                                  df.loc[has_d, "in_contact"])
+                if tab.shape == (2, 2):
+                    orr, pf = fisher_exact(tab.to_numpy(), alternative="greater")
+                else:
+                    orr, pf = np.nan, np.nan
+                u, pu = mannwhitneyu(
+                    df.loc[has_d & df["significant"], "ca_distance_a"].dropna(),
+                    df.loc[has_d & ~df["significant"], "ca_distance_a"].dropna(),
+                    alternative="less") if (has_d & df["significant"]).sum() > 2 \
+                    else (np.nan, np.nan)
+                contact_summary = {
+                    "n_pairs_with_structure": int(has_d.sum()),
+                    "n_significant": int(sig["significant"].sum()),
+                    "n_significant_in_contact": int((sig["in_contact"] == True).sum()),  # noqa: E712
+                    "n_significant_both_in_groove": int((sig["both_in_groove"] == True).sum()),  # noqa: E712
+                    "contact_enrichment_or": orr, "contact_enrichment_p": pf,
+                    "median_dist_significant": float(sig["ca_distance_a"].median()),
+                    "median_dist_other": float(df.loc[has_d & ~df["significant"],
+                                                      "ca_distance_a"].median()),
+                    "mannwhitney_p": pu,
+                }
+                for k_, v_ in contact_summary.items():
+                    print(f"[coupling] {k_}: {v_}", file=sys.stderr)
+                pd.Series(contact_summary).rename("value").rename_axis(
+                    "metric").to_csv(a.out.replace(".tsv", "_contacts.tsv"), sep="\t")
+    else:
+        print("[coupling] no structure supplied; coupled pairs are not validated "
+              "against spatial adjacency. The result stays a statistic.",
+              file=sys.stderr)
+
     df = df.sort_values("q_bh")
     df.to_csv(a.out, sep="\t", index=False)
 

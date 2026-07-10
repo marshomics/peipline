@@ -26,7 +26,10 @@ BUILD="$OUT/build"
 PACK="$OUT/envs"
 mkdir -p "$BUILD" "$PACK"
 
-ENVS=(hmmer py phylo network prodigal r)
+# `selection` was missing here while the Snakefile REQUIRED it, so an
+# offline cluster had no supported way to obtain it: the run aborted
+# telling the user to run this script, which did not install it.
+ENVS=(hmmer py phylo network prodigal r selection)
 
 # ---------------------------------------------------------------------------
 # Pick a solver. mamba/micromamba are much faster; conda works.

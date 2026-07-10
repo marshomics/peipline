@@ -129,7 +129,10 @@ def main() -> None:
     a = ap.parse_args()
 
     cfg = load_config(a.config)
-    PROF = cfg["profiles"]
+    # A disabled profile was never searched, so it must not appear in the funnel,
+    # the FDR table or the evidence tiers. See config.yaml: PF03412 is declared
+    # and disabled until the per-family alignment path exists.
+    PROF = {k: v for k, v in cfg["profiles"].items() if v.get("enabled", True)}
     specific = cfg["specific_profile"]
     min_cov = float(cfg.get("min_profile_coverage", 0.0))
 
@@ -168,7 +171,10 @@ def main() -> None:
     smap["sample"] = smap["sample"].astype(str)
 
     if len(all_dom):
-        all_dom = all_dom.merge(smap[["sample", "faa"]], on="sample", how="left")
+        # A duplicate sample in the batch maps would multiply hit rows. Assert the
+        # 1:1 that build_sample_table.py already guarantees, rather than trust it.
+        all_dom = all_dom.merge(smap[["sample", "faa"]], on="sample", how="left",
+                                validate="many_to_one")
         if all_dom["faa"].isna().any():
             n = int(all_dom["faa"].isna().sum())
             sys.exit(f"[combine] {n} hits could not be traced to a faa path. The batch "
@@ -196,8 +202,13 @@ def main() -> None:
         g = best.groupby(prot, sort=False)["profile"]
         best["n_profiles_hit"] = g.transform("nunique").astype("int8")
         best["profiles_hit"] = g.transform(lambda s: ",".join(sorted(set(s))))
+        # str.contains is a REGEX SUBSTRING test. It happens to work because
+        # "PF12386" is not a substring of "SSF54001" and has no metacharacters.
+        # Add a profile named e.g. "PF123" and every PF12386 hit silently becomes
+        # "specific". Test membership in the comma-separated list instead.
         best["evidence"] = np.where(
-            best["profiles_hit"].str.contains(specific), "specific", "ssf_only")
+            best["profiles_hit"].str.split(",").map(lambda xs: specific in xs),
+            "specific", "ssf_only")
 
         best = best[OUT_COLS].sort_values(["sample", "protein_id", "profile"])
         best.to_csv(a.out_combined, sep="\t", index=False)

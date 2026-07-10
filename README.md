@@ -142,10 +142,18 @@ $ ./run.sh preflight
 PeiW and PeiP are prophage-encoded enzymes that cleave the ε(Ala)–Lys isopeptide
 bond of archaeal pseudomurein, in Methanobacteriales and Methanopyrales.
 PF12386 is the C-terminal catalytic cysteine-protease domain; the full enzymes
-carry an N-terminal pseudomurein-binding repeat. The PeiP structure (PDB 8Z4F)
-shows a transglutaminase-like fold with a **Cys–His–Asp** triad, so CHD is the
-hypothesis this pipeline tests. (An earlier draft of this README argued for
-Cys–His–Asn on clan-CA grounds. That was wrong; C71 is not papain-like.)
+carry four N-terminal pseudomurein-binding repeats.
+
+Both structures use a **Cys–His–Asp** triad, so CHD is the hypothesis this
+pipeline tests, and the C→A, H→A and D→A mutants are inactive
+([Wang et al. 2025](https://doi.org/10.1016/j.ijbiomac.2025.141813)). PeiW-CD is
+8JX4 (C198/H233/D250); PeiP is 8Z4F (C213/H248/D272). Wang et al. place the
+catalytic domain in the **papain superfamily** fold, not the transglutaminase
+fold an earlier draft of this README asserted from a secondary summary. The
+triad is CHD either way, and that is what the filter uses.
+
+(A still earlier draft argued for Cys–His–**Asn** on clan-CA grounds. That was
+also wrong.)
 
 Two consequences run through the design:
 
@@ -156,6 +164,279 @@ Two consequences run through the design:
 - These are phage genes in a narrow host clade, so genome-level prevalence is
   confounded by both phylogeny and assembly quality. Both are modelled, not
   assumed away.
+
+---
+
+## Probing target specificity
+
+Pei cleaves the ε-isopeptide bond between **alanine** and lysine, so the alanine
+is P1. [Kandler & König 1978](https://doi.org/10.1007/BF00415722) report the
+molar ratio Lys : Ala : Glu as 1 : 1.2 : 2 — **one alanine per subunit** —
+therefore the alanine they find completely replaced by threonine in
+*Methanobrevibacter ruminantium* M1 is *the* P1 alanine. That closes the question
+an earlier draft of this README left open.
+
+The same paper reports a second substitution on the **other side** of the
+scissile bond: about a quarter of the lysine in *Methanobrevibacter smithii* PS
+is ornithine, whose δ-amine is one methylene shorter than a lysine ε-amine. So
+the wall varies at P1 *and* at P1′, and these are different questions.
+
+`scripts/cellwall_reference.py` encodes that paper, and only that paper. What
+the enzymes do with those walls comes from Wang et al. 2025 (below).
+
+**Genus-level assignment is not uncertain, it is wrong.** Both strains the 1978
+paper calls "*M. ruminantium*" now sit in *Methanobrevibacter*: M1 is the type
+strain of *M. ruminantium* (Thr/Lys), PS is the type strain of *M. smithii*
+(Ala/Lys–Orn). A third species of the same genus, *M. arboriphilus*, is Ala/Lys.
+One genus, three wall chemistries. `chemistry_for()` returns `unknown` rather
+than guessing, and `genus_is_homogeneous()` is what decides.
+
+**Two claims are refused.** Serine-for-alanine in *Methanosphaera stadtmanae* and
+an ornithine modification in *Methanopyrus kandleri* both circulate in secondary
+summaries; neither is in Kandler & König 1978 (those species were described in
+1985 and 1991). They are labelled `unsupported`, not silently used. Supply the
+primary reference and add them to `REFERENCE` to activate them.
+
+**The published assay only probes one axis.** H-Glu-γ-Ala-pNA has a chromophore
+where the acceptor residue should be, so it tests P1 and cannot test P1′.
+`assay_panel.tsv` therefore emits `prediction_p1` and `prediction_p1_prime`
+separately, and says which picks need real Ala–Lys / Ala–Orn isopeptide
+substrates instead.
+
+| Species | P1 | P1′ | Evidence |
+|---|---|---|---|
+| *M. ruminantium* | **Thr** | Lys | type strain M1, complete replacement |
+| *M. smithii* | Ala | **Lys/Orn** | type strain PS, ~1/4 Orn |
+| *M. arboriphilus* | Ala | Lys | species |
+| *M. thermautotrophicus* | Ala | Lys | species (the PeiW/PeiP host genus) |
+| *M. formicicum*, *M. bryantii* | Ala | Lys | species / strain M.o.H. |
+| *Methanospirillum hungatei* | — | — | protein sheath, no sacculus |
+
+The enzymes are two-module: four N-terminal pseudomurein-binding repeats (PMBR,
+PF09373) and a C-terminal C71 catalytic domain. The 2010 review states that the
+repeat array "probably serves as a determinant of substrate specificity." So
+specificity has two axes — which bond the groove cuts, and which sacculus the
+repeats bind — and the pipeline measures both.
+
+`test/test_cellwall_reference.py` checks every row of that table, the genus
+refusal, and the two disputed claims.
+
+### What Wang et al. 2025 settles, and what it broke
+
+[Wang et al., *Int J Biol Macromol*](https://doi.org/10.1016/j.ijbiomac.2025.141813)
+solved both enzymes and assayed them on synthetic isopeptides. Four consequences.
+
+**Two structures, two numberings.** PeiW-CD is **8JX4** (triad C198 / H233 /
+D250); full-length PeiP is **8Z4F** (triad **C213 / H248 / D272** — exactly the
+numbers you gave me at the outset, which were right). Y174, V252 and C265 are
+quoted in **PeiW** numbering. An earlier version of this config pointed at 8Z4F
+while using those numbers, silently selecting the wrong residues.
+`specificity.structure_expect` now asserts the identity of every named residue
+and `groove_map.py` exits non-zero on a mismatch, naming both PDB entries.
+
+**The P1 axis is real, already measured, and the two papers disagree about it.**
+Subedi et al. 2015 bought Glu-γ-**Thr**-pNA from JPT, assayed both enzymes, and
+saw nothing; they also found *M. ruminantium* M1, the Thr-walled organism, is not
+lysed by either. Wang et al. 2025 report PeiW cleaving the Glu-γ-Thr-ε-**Lys**
+isopeptide. Both can be true: the pNA leaving group sits where the acyl acceptor
+belongs, so the chromogenic series leaves S1′ empty. They reconcile if S1 and S1′
+are coupled — PeiW takes the extra methyl of threonine only when a real ε-amino
+acceptor is bound.
+
+The consequence is operational, not philosophical: **a P1 claim cannot be tested
+with a pNA substrate** unless the residue is Ala or Ser, the two the pNA series
+does cleave. `assay_panel.py` emits a `substrate_format` column and routes every
+other P1 to an isopeptide. An earlier version of this pipeline asserted that the
+Thr chromogen had never been synthesised; `test_lysis_reference.py` greps the
+whole repo and fails the build if that claim reappears.
+
+Cleaving a soluble isopeptide is still not lysing a sacculus. PeiW cuts the Thr
+isopeptide and cannot lyse the Thr-walled organism. That gap is unexplained and
+the code says so rather than smoothing it.
+
+**Serine is accepted at P1.** Both enzymes cleave Glu-γ-Ser-pNA. Aspartate is
+rejected at P2 (Asp-β-Ala-pNA is a poor substrate), and the Glu–Ala bond need not
+be a γ-isopeptide at all — only the Ala–Lys bond does.
+
+**No published substrate tests P1′.** The pNA series has a chromophore where the
+acceptor sits; the six isopeptides all carry Lys. The Orn acceptor of
+*M. smithii* is untested, and the panel says so.
+
+**Both enzymes need a divalent metal, and they disagree about which.** After
+EDTA, PeiW and PeiP retain under 1% activity. Ca²⁺ restores both. Mn, Mg, Ba and
+Ni restore PeiW; for PeiP they give under 15%. This is the sharpest measured
+difference between the two characterised enzymes, and neither the groove nor the
+four-class partition predicts it. No deposited Pei structure resolves the cation.
+`groove_map.py` looks for one, builds a coordination shell if it finds one, and
+reports the absence plainly if it does not — `sdp.py` then tests that shell for
+specificity-determining positions separately from the groove.
+
+**The prespecified hypothesis: Pei sequence tracks host wall chemistry.**
+*M. ruminantium* M1 has Thr at P1, resists PeiW and PeiP, and its own prophage
+Φmru encodes an endoisopeptidase, PeiR, that lyses it while showing little
+homology to either. A divergent enzyme for a divergent wall, in the one host where
+it can be checked. PeiR is registered as a sentinel in `config.yaml`: if PF12386's
+curated threshold misses it, the screen is blind in exactly the direction it
+cares about.
+
+**Three PMB motifs are required to bind, and the threshold is a cliff.**
+Visweswaran et al. 2011 fused one, two or three motifs to GFP. Three bind the
+pseudomurein sacculus. Two bind lysozyme-treated *L. lactis* and *E. coli*
+spheroplasts and **not** pseudomurein. One binds nothing. So a C71 domain carried
+on fewer than three motifs cannot dock on an intact sacculus whatever its active
+site looks like — a falsifiable claim about every hit, not a covariate to regress
+out. `domain_arch.py` emits `pmbr_binding_competent` and `predicted_binding`.
+
+That makes the repeat count load-bearing. A PMB motif is 30–35 residues; one
+dropped repeat at a strict domain E-value flips the call. hmmscan now runs once
+at a permissive E-value and `domain_arch.py` filters at two, classing anything
+that changes side as `pmbr_count_ambiguous` and dropping it from the
+`pmbr_architecture` partition. Assigning it to a threshold is not the same as
+assigning it to a phenotype.
+
+**PMBR is not a pseudomurein marker.** The domain binds NAG, the one sugar shared
+by murein and pseudomurein, and it is not Pei-specific: the S-layer protein
+MTH719 carries three motifs and no catalytic domain. A bacterial C71+PMBR protein
+may be binding exposed murein rather than being a binning artefact. Usefully, this
+is also why `pmbr_architecture` is a legitimate SDP partition against a catalytic
+barcode: the module reads the glycan, the groove reads the peptide. (Wang et al.'s
+claim that the PB repeats improve recognition of Glu-γ-Thr/Ser is in tension with
+that, and `sdp.py` says so.)
+
+`sdp.py` will not accept `pmbr_partition_mode: both`. The repeat-count partition
+and the binarized one are nested, so replication across them would count one
+observation twice and satisfy `sdp_min_partitions` on a single piece of evidence.
+
+**The published assays run where the binding module works worst.** The domain
+binds pseudomurein completely at pH 9.0 (its pI is 9.2), partially at 6.5, not at
+all at 4.0, and aggregates at pH 7.0. Every published Pei lysis assay runs at
+pH 7.0–7.85. PMB pIs span 3–10, so `domain_arch.py` computes each protein's own
+pI from its own PMB span and `assay_panel.py` carries the advice per pick.
+
+This reopens the M1 paradox. PeiW cleaves the Thr isopeptide but cannot lyse the
+Thr-walled organism. If the failure were catalytic, the isopeptide would resist
+too. It may be a docking failure. The discriminating experiment is cheap: PeiW
+catalytic domain vs full-length PeiW, on M1 sacculi. The tension is that the PMB
+domain is thought to read the glycan while Thr-for-Ala is a peptide substitution,
+so a binding explanation needs the two coupled somehow. Unresolved, and recorded
+as unresolved.
+
+**The only experiment that can prove this pipeline wrong.** `rule lysis_check`
+scores the host-chemistry rule against Subedi et al.'s eleven-strain plate-lysate
+panel. It runs in milliseconds, before 350,000 proteomes are searched, and
+`--strict` aborts the run on a disagreement. Four falsifiable rows, four
+agreements. The rule declines to predict *Methanobrevibacter* sp. SM9 — lysed by
+PeiW, not by PeiP — because no chemistry has been published for it. That is the
+honest output, and the differential is a free hypothesis for the SDP analysis.
+
+**The family has a published four-class partition — from two residues.**
+V252 and C265 are the only non-conserved positions near the His/Asp centre, and
+they set activity:
+
+| Class | 252 | 265 | Measured activity |
+|---|---|---|---|
+| I | V | C | active (PeiW, PeiP) |
+| II | V | V | ~50% of PeiW-CD |
+| III | T/S | I | strongly reduced |
+| IV | A | M/W | strongly reduced |
+
+`scripts/pei_class.py` assigns every sequence, and reports the adjusted Rand
+index against our own k-means subgroups and SSN clusters. This is an **external
+prior for k = 4** that owes nothing to our clustering. If the k-means doesn't
+recover it, that is the result, and the script says so rather than smoothing it.
+
+It also creates a fresh circularity hazard, which is handled: **V252 sits two
+residues from the catalytic D250**, so it falls inside the ±5 triad-flank
+barcode. `sdp.py` excludes both class-defining columns from the SDP test
+whenever the `pei_class` partition is used, and only for that partition. The
+synthetic test asserts exactly this.
+
+A large class III/IV population among triad-positive sequences would mean the
+triad filter is retaining proteins that cannot cleave. That's a finding about
+the filter, and `pei_class.py` prints it as one.
+
+### The circularity problem, and how it is avoided
+
+The active-site subgroups are k-means on the triad-flank barcode. Testing
+specificity-determining positions on those same columns, against those same
+groups, rediscovers them by construction. The result would be beautiful and
+empty.
+
+`sdp.py` therefore calls SDPs under four partitions that never saw the barcode —
+tree clades, SSN clusters, PMBR architecture, host genus — and reports a column
+only if it clears FDR under at least two. `sdp_concordance.tsv` gives the
+pairwise Jaccard of the four SDP sets. `preflight.py` fails if
+`active_site_subgroup` appears in `sdp_partitions`.
+
+The permutation null shuffles group labels **within tree clades**, so it
+preserves phylogeny instead of destroying it. A global shuffle makes every
+phylogenetically clustered position look like an SDP.
+
+### What each script contributes
+
+| Script | Question |
+|---|---|
+| `domain_arch.py` | How many PMBR repeats? Any non-PMBR binding module (LysM, SH3b, PG_binding_1, choline-binding)? Those cannot bind pseudomurein. |
+| `module_trees.py` | Do the binding and catalytic modules share a history? Mantel on patristic distances, normalised Robinson-Foulds, tanglegram. Incongruence means retargeting by module swap. |
+| `cellwall_genotype.py` | What cross-link does the host actually build? Pmur marker screen plus the literature P1 call, by taxon. |
+| `groove_map.py` | Which PF12386 match columns line the substrate groove in PeiW-CD (8JX4)? Refuses a structure whose residues contradict the config. |
+| `pei_class.py` | Which of Wang et al.'s four classes is each sequence, and does our k-means agree? |
+| `sdp.py` | Which columns determine specificity, non-circularly, and are they in the groove? |
+| `coupling.py` | Are the coupled barcode pairs spatially adjacent, or is that phylogenetic signal APC missed? |
+| `selection.py` | Purifying selection on the triad, episodic diversifying selection on the groove? FEL, MEME. |
+| `assay_panel.py` | Which N proteins to synthesise, and what does each predict on EγA/EγT/EγS-pNA? |
+
+### Three things it deliberately refuses to do
+
+It does not call a genome "Ala-type" because a Pmur marker is missing. A marker
+can be absent because the pathway is absent, because the MAG is 70% complete, or
+because the HMM is bad. Genomes below `pmur_min_markers` are
+`no_pathway_detected`, and completeness is carried forward so the regression can
+condition on it.
+
+It does not infer P1 chemistry from the marker set, because no published Pmur
+marker is known to determine P1. The call comes from `cellwall_reference.py` at
+the level the primary paper supports (species, and in two cases a single type
+strain), and `p1_source` records which.
+
+`groove_map.py` **exits non-zero** if the triad columns do not map to C/H/D in
+the structure, or if under half the match columns have a structural residue. A
+groove built on a bad alignment silently corrupts every SDP, every coupling
+contact and every selection contrast downstream. Better to stop.
+
+### Verification
+
+`test/test_specificity.py` builds a world with a known answer: a synthetic PeiP
+whose triad, two specificity seeds and five genus-driven SDP columns cluster
+within 8 Å while everything else is 30 Å away; five decoy columns driven by the
+barcode subgroup and nothing else; two trees, one star and one balanced.
+
+```
+groove columns recovered: [112, 147, 150, 168, 171, 145, 149, 152, 170, 173]  (exact)
+--- star tree ---      null: global_fallback   (degenerate within-clade null, detected)
+--- balanced tree ---  null: within_clade
+replicated SDPs      : [145, 149, 152, 170, 173]   = the planted genus-driven columns
+circular decoys      : [40, 60, 80, 200, 220]      = none called
+groove enrichment    : OR = inf, p = 1.13e-09
+RESULT: PASS
+```
+
+Two real bugs surfaced here and both are fixed. `hmmalign --trim` removes
+terminal residues, and the first draft kept indexing the structure from residue
+zero, shifting the entire groove by the number trimmed. And cutting tree clades
+at a fixed relative depth produced 240 singleton clades on an unbalanced tree,
+which makes a within-clade shuffle the identity permutation: the null becomes the
+observation, every z is zero, and the test can never reject anything. It fails
+silently and looks exactly like "no signal". Clades are now cut by subtree size,
+and `null_is_degenerate()` catches the residual case and falls back loudly.
+
+### What it needs that this cluster cannot download
+
+`Pfam-A.hmm` (pressed), the PeiP structure (8Z4F), a directory of Pmur marker
+HMMs, and the geNomad database. Paths are in `config.yaml` under `specificity:`;
+`./run.sh preflight` checks every one, verifies the Pfam accessions are present
+in your release, and resolves the groove seed residues against the structure
+before anything is submitted.
 
 ---
 
@@ -536,7 +817,22 @@ scripts/
   plot_tree.py            figures 08-09, rectangular and circular
   make_report.py          report.md
   utils.py                fasta/stockholm/domtblout I/O, plot style
-test/                     synthetic data, tool stubs, end-to-end check
+  --- target specificity ---
+  domain_arch.py          PMBR repeats + accessory binding modules (figure 23)
+  module_trees.py         catalytic vs PMBR tree congruence, tanglegram
+  cellwall_reference.py   Kandler & Koenig 1978, encoded; refuses genus guesses
+  cellwall_genotype.py    Pmur markers, host P1 / P1' call
+  groove_map.py           8JX4 (PeiW-CD) groove -> PF12386 match columns; identity guard
+  pei_class.py            the published four-class partition (figure 28)
+  sdp.py                  non-circular SDPs across 4 partitions (figures 24-25)
+  selection.py            FEL/MEME, groove vs core (figure 26)
+  assay_panel.py          which proteins to synthesise (figure 27)
+test/
+  make_testdata.py        synthetic screen dataset
+  run_test.py             end-to-end screen check
+  test_specificity.py     planted groove, planted SDPs, circularity trap
+  test_cellwall_reference.py  every literature row, the genus refusal, disputed claims
+  stubs.py                prodigal/seqkit/mmseqs/diamond/hmmsearch/trimal stubs
 ```
 
 ## Before you run it

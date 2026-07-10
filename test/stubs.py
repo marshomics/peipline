@@ -186,8 +186,49 @@ def hmmsearch_main(argv):
             first = False
 
 
+def hmmalign_main(argv):
+    """hmmalign --trim --amino --outformat Stockholm -o OUT <hmm> <faa>
+
+    pyhmmer *is* the HMMER3 code, so this is the real algorithm behind a CLI
+    shim rather than an approximation of it. The `#=GC RF` line is what matters:
+    groove_map.py and triad_detect_filter.py use the profile match states as
+    their coordinate system, and an alignment written without RF silently has no
+    coordinates at all.
+    """
+    import pyhmmer
+    from pyhmmer.easel import Alphabet, SequenceFile
+    from pyhmmer.plan7 import HMMFile
+
+    out, trim, pos = None, False, []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "-o":
+            out, i = argv[i + 1], i + 2
+        elif a == "--trim":
+            trim, i = True, i + 1
+        elif a == "--outformat":
+            i += 2
+        elif a.startswith("-"):
+            i += 1
+        else:
+            pos.append(a)
+            i += 1
+    if len(pos) != 2 or out is None:
+        sys.exit(f"hmmalign stub: expected '<hmm> <faa>' plus -o, got {argv}")
+
+    with HMMFile(pos[0]) as hf:
+        hmm = next(iter(hf))
+    with SequenceFile(pos[1], digital=True, alphabet=Alphabet.amino()) as sf:
+        seqs = sf.read_block()
+    msa = pyhmmer.hmmalign(hmm, seqs, trim=trim)
+    msa.name = b"aln"
+    with open(out, "wb") as fh:
+        msa.write(fh, "stockholm")
+
+
 DISPATCH = {"seqkit": seqkit_main, "mmseqs": mmseqs_main, "diamond": diamond_main,
-            "hmmsearch": hmmsearch_main}
+            "hmmsearch": hmmsearch_main, "hmmalign": hmmalign_main}
 
 
 def install(bindir):

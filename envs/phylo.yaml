@@ -5,8 +5,17 @@ channels:
 dependencies:
   - iqtree=2.3.6
   - trimal=1.4.1
+  - mafft=7.526
   - seqkit=2.8.2
   - mmseqs2=15.6f452
   - hmmer=3.4
   - python=3.11
   - pyyaml=6.0
+  # module_trees.py runs in THIS env (it needs mafft + iqtree) and imports
+  # numpy, pandas, Bio and matplotlib. Without these it dies on `import numpy`
+  # before doing anything, and neither the Snakefile's env check nor
+  # install_envs.sh's binary check would notice.
+  - numpy=1.26.4
+  - pandas=2.2.2
+  - biopython=1.83
+  - matplotlib-base=3.8.4

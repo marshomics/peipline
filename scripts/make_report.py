@@ -66,6 +66,11 @@ def main() -> None:
     dstat = load(os.path.join(T, "phylogenetic_signal_D.tsv"))
     tips = load(os.path.join(T, "tree_tip_matching.tsv"))
     ssn_agree = load(os.path.join(T, "ssn_vs_subgroup_agreement.tsv"), index_col="metric")
+    lysis = load(os.path.join(T, "lysis_reference_check.tsv"))
+    try:
+        gdef = json.load(open(os.path.join(T, "groove_definition.json")))
+    except Exception:  # noqa: BLE001
+        gdef = {}
     n_c71 = sum(1 for _ in read_fasta(a.c71))
 
     r1, r2, r3 = tri["residues"]
@@ -85,6 +90,26 @@ def main() -> None:
             L.append(f"| {key.replace('_', ' ')} | {int(float(stats.loc[key, 'value'])):,} |")
     L.append(f"| triad-positive sequences | {tri['n_triad_positive']:,} |")
     L.append(f"| sequences in c71.faa | {n_c71:,} |\n")
+
+    # c71.faa is a union of two evidence tiers, and after this point nothing
+    # distinguishes them. Say so where it cannot be missed.
+    c71ev = load(os.path.join(T, "c71_evidence.tsv"))
+    if not c71ev.empty and "evidence" in c71ev.columns:
+        comp = c71ev["evidence"].value_counts()
+        n_ssf = int(comp.get("ssf_only", 0))
+        L.append("`c71.faa` is the **union of two evidence tiers**: "
+                 + ", ".join(f"{v:,} `{k}`" for k, v in comp.items()) + ".\n")
+        if n_ssf:
+            L.append(f"> {n_ssf / max(len(c71ev), 1):.1%} of `c71.faa` cleared only "
+                     f"the SSF54001 fold model and then passed the triad filter. "
+                     f"Their triad is real; their **family is not established**, "
+                     f"because SCOP 54001 spans ~22 families related by insertion "
+                     f"and circular permutation. Every analysis after this point — "
+                     f"the tree, the subgroups, the SSN, the coupling, dN/dS, the "
+                     f"prevalence model — treats them identically to PF12386 hits. "
+                     f"The `evidence:ssf_only` row of `convergence.tsv` is the "
+                     f"check: if those tips form a clade, `c71.faa` contains two "
+                     f"families and the pooling has to be defended.\n")
 
     L.append("Thresholds applied: " + ", ".join(
         f"**{p}** = `{d['threshold']}` ({d['role']})" for p, d in cfg["profiles"].items()) + ".\n")
@@ -126,20 +151,52 @@ def main() -> None:
         for h, d in sorted(tri["hypotheses_scored"].items(), key=lambda kv: -kv[1]["score"]):
             L.append(f"| {h} | {d['score']:.3f} | {d['columns']} |")
         L.append("")
-        L.append("> PeiP (PDB 8Z4F) is a transglutaminase-like isopeptidase with a "
-                 "Cys-His-Asp triad, so CHD is the expected answer. CHN is scored only "
-                 "as a control. If CHN wins, something is wrong with the alignment, not "
-                 "with the biology.\n")
+        L.append("> PeiW (8JX4, C198/H233/D250) and PeiP (8Z4F, C213/H248/D272) both "
+                 "use a Cys-His-Asp triad, and every alanine mutant is inactive "
+                 "(Wang et al. 2025). CHD is the expected answer; CHN is scored only "
+                 "as a control. If CHN wins, something is wrong with the alignment, "
+                 "not with the biology.\n")
 
     if not tiers.empty:
         L.append("### Triad filter by evidence tier\n")
         L += md_table(tiers)
-        if len(tiers) == 2:
-            s = tiers.set_index("evidence")
-            if "ssf_only" in s.index and "specific" in s.index:
-                rs, rf = s.loc["specific", "frac_triad_positive"], s.loc["ssf_only", "frac_triad_positive"]
-                L.append(f"> PF12386 hits carry the triad {rs:.1%} of the time; "
-                         f"SSF54001-only hits {rf:.1%} of the time. "
+        s = tiers.set_index("evidence")
+        col = ("frac_triad_positive_of_testable"
+               if "frac_triad_positive_of_testable" in tiers.columns
+               else "frac_triad_positive")
+        if "ssf_only" in s.index and "specific" in s.index:
+            rs, rf = float(s.loc["specific", col]), float(s.loc["ssf_only", col])
+            ft = float(s.loc["ssf_only", "frac_testable"]) if "frac_testable" in \
+                tiers.columns else 1.0
+            L.append(f"> Of the SSF54001-only sequences, **{ft:.1%} could be tested "
+                     f"at all**: the rest are gapped at the triad columns or below "
+                     f"the match-state coverage floor, meaning hmmalign never placed "
+                     f"them on the PF12386 scaffold. The test did not run on those; "
+                     f"they are not negatives.\n")
+            if "n_negative_with_all_three_residues" in tiers.columns:
+                nu = int(s.loc["ssf_only", "n_negative_with_all_three_residues"])
+                nn = int(s.loc["ssf_only", "n_triad_negative"])
+                if nu:
+                    L.append(f"> Of the {nn:,} sequences that *were* testable and "
+                             f"came out negative, **{nu:,} carry a Cys, a His and an "
+                             f"Asp somewhere in the aligned region** -- just not at "
+                             f"the triad columns. A circularly permuted catalytic "
+                             f"core looks exactly like this. Those negatives are not "
+                             f"safe, and no column test can make them safe.\n")
+            if ft < 0.5:
+                L.append("> **The pass rate below cannot answer the "
+                         "transglutaminase question.** SCOP 54001 spans ~22 "
+                         "families related to the papain core by insertion and "
+                         "*circular permutation*, including the transglutaminase "
+                         "core. A permuted core has a Cys-His-Asp triad in 3D but "
+                         "in a different sequential order, and this filter requires "
+                         "C, H and D at fixed columns with `i < j < k`. It is "
+                         "structurally incapable of detecting one. Use a "
+                         "profile-profile map (HH-suite) or a superposition against "
+                         "8JX4 instead.\n")
+            else:
+                L.append(f"> Among testable sequences, PF12386 hits carry the triad "
+                         f"{rs:.1%} of the time and SSF54001-only hits {rf:.1%}. "
                          + ("The columns are diagnostic.\n" if rf < 0.5 * rs else
                             "These rates are close, which means the columns are not "
                             "discriminating fold from function. Investigate before "
@@ -212,6 +269,100 @@ def main() -> None:
                  "coefficient means the screen misses C71 in incomplete genomes, which "
                  "is why the prevalence table is reported at reference genome quality "
                  "rather than raw.\n")
+
+    # ---- binding module -----------------------------------------------------
+    archdf = load(os.path.join(T, "domain_architecture.tsv"))
+    if not archdf.empty and "pmbr_binding_competent" in archdf.columns:
+        n = len(archdf)
+        n_ok = int(archdf["pmbr_binding_competent"].sum())
+        n_frag = int(archdf.get("pmbr_count_fragile", pd.Series(0, index=archdf.index)).sum())
+        L.append("## Binding module\n")
+        L.append("Visweswaran et al. 2011 (doi:10.1371/journal.pone.0021582) fused "
+                 "one, two or three PMB motifs to GFP. Three bind the pseudomurein "
+                 "sacculus. Two bind lysozyme-treated bacterial spheroplasts and "
+                 "**not** pseudomurein. One binds nothing.\n")
+        L.append(f"| Binding call | Proteins |")
+        L.append("|---|---|")
+        for k, v in archdf["predicted_binding"].value_counts().items():
+            L.append(f"| {k} | {v:,} |")
+        L.append("")
+        L.append(f"> {n_ok:,} of {n:,} proteins carry at least three motifs. The "
+                 f"remainder are predicted unable to dock on an intact sacculus "
+                 f"whatever their active site looks like, so a whole-cell lysis "
+                 f"negative for one of them tests the module, not the triad.\n")
+        if n_frag:
+            L.append(f"> **{n_frag:,} proteins change binding class between the "
+                     f"strict and permissive domain E-values.** A PMB motif is "
+                     f"30-35 residues and the threshold is a cliff, so for these "
+                     f"the architecture is not determined by the data. They are "
+                     f"classed `pmbr_count_ambiguous` and dropped from the "
+                     f"`pmbr_architecture` partition rather than assigned to "
+                     f"whichever side the E-value picked.\n")
+        L.append("> PMBR is not a pseudomurein marker. The domain binds NAG, the "
+                 "one sugar shared by murein and pseudomurein, and it sticks to "
+                 "*L. lactis* and *E. coli* spheroplasts. It is not Pei-specific "
+                 "either: the S-layer protein MTH719 carries three motifs and no "
+                 "catalytic domain. A bacterial C71+PMBR protein may be binding "
+                 "exposed murein rather than being a binning artefact.\n")
+        if "pmbr_pi" in archdf.columns and archdf["pmbr_pi"].notna().any():
+            pis = pd.to_numeric(archdf["pmbr_pi"], errors="coerce").dropna()
+            L.append(f"> PMB pI: median {pis.median():.1f}, range {pis.min():.1f} to "
+                     f"{pis.max():.1f}. The characterised domain binds completely at "
+                     f"pH 9.0 (pI 9.2), partially at 6.5, not at all at 4.0, and "
+                     f"aggregates at 7.0. Every published Pei lysis assay runs at "
+                     f"pH 7.0-7.85, which is where the module is least competent.\n")
+
+    # ---- the one falsifiable check ------------------------------------------
+    if not lysis.empty:
+        L.append("## Validation against a measured phenotype\n")
+        L.append("Subedi et al. 2015 (doi:10.1155/2015/828693) plated purified "
+                 "PeiW and PeiP on eleven methanogens. This pipeline predicts "
+                 "susceptibility from host wall chemistry (Kandler & Koenig 1978) "
+                 "using a rule derived from the chromogenic substrate series. "
+                 "Neither table saw the other, so these rows could have come out "
+                 "wrong.\n")
+        nt = lysis[lysis["nontrivial"].astype(str).str.lower() == "true"] \
+            if "nontrivial" in lysis.columns else lysis
+        testable = nt[nt["agrees"].notna()]
+        n_ok = int(testable["agrees"].astype(str).str.lower().eq("true").sum())
+        L += md_table(lysis[["strain", "enzyme", "wall", "p1_residue",
+                             "observed", "predicted", "agrees"]])
+        L.append(f"> {n_ok} of {len(testable)} falsifiable predictions agree. "
+                 f"Rows whose host has no pseudomurein are excluded from that "
+                 f"count: predicting that an enzyme cannot cut a wall which does "
+                 f"not exist is not a test.\n")
+        na = lysis[lysis["agrees"].isna()]
+        if len(na):
+            L.append(f"> {len(na)} rows are left unpredicted because no wall "
+                     f"chemistry has been published for the host. *Methanobrevibacter* "
+                     f"sp. SM9 is the interesting one: PeiW lyses it and PeiP does "
+                     f"not, which is the only differential in the panel and the "
+                     f"only place a specificity model could be tested against a "
+                     f"phenotype it has never seen.\n")
+
+    # ---- metal --------------------------------------------------------------
+    met = (gdef or {}).get("metal") or {}
+    if met:
+        L.append("## Divalent metal site\n")
+        L.append("Both characterised enzymes retain under 1% activity after EDTA. "
+                 "Ca restores both; Mn, Mg, Ba and Ni restore PeiW but leave PeiP "
+                 "under 15%. That is the sharpest measured difference between them, "
+                 "and neither the substrate groove nor the four-class partition "
+                 "predicts it.\n")
+        if met.get("ions_found"):
+            L += md_table(pd.DataFrame(met["ions_found"]))
+            L.append(f"> {met['n_coordinating']} residues coordinate an ion and "
+                     f"{met['n_in_shell']} lie in the shell; "
+                     f"{met['shell_overlaps_groove']} of those are also in the "
+                     f"substrate groove. The metal shell is tested for "
+                     f"specificity-determining positions separately, so a hit in "
+                     f"one region is not evidence for the other.\n")
+        else:
+            L.append("> **No cation is present in the deposited coordinates.** "
+                     "The requirement is biochemical, not structural: no Pei "
+                     "structure resolves the site. No metal shell was tested, and "
+                     "none was invented. Locating this site is the most obvious "
+                     "experiment this analysis cannot do.\n")
 
     # ---- versions & files ---------------------------------------------------
     L.append("## Versions\n```")

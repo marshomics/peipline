@@ -93,13 +93,89 @@ profiles:
     path: /ebio/abt3_scratch/jmarsh/jan/hmms/PF12386.hmm
     threshold: cut_ga              # 'cut_ga' | 'cut_nc' | 'cut_tc' | a number
     role: specific
+    family: c71
   SSF54001:
     path: /ebio/abt3_scratch/jmarsh/jan/hmms/SSF54001.hmm
     threshold: 25
     role: sensitivity
+    family: null                   # a fold model; it belongs to no single family
+  # ---- the C39 arm ---------------------------------------------------------
+  # PeiR (UniProt D3DZZ6), the only Pei that lyses the Thr-walled M. ruminantium
+  # M1, carries PF03412 and NOTHING else: no PF12386, no PF09373. The three
+  # CRISPRTarget-discovered active Peis (PeiG2, PeiTh2, PeiF3) were chosen for
+  # homology to PeiR, and PeiF3's lytic activity was killed by mutating its
+  # "C39 peptidase domain" active site. So the divergent Pei clade is a C39 clade.
+  #
+  # READ THIS BEFORE RUNNING. MEROPS C39 proper is the bacteriocin-processing
+  # peptidase domain in the N-terminus of ABC transporters, which cleaves the
+  # double-glycine leader of class II bacteriocins. It is papain-like with a CHD
+  # triad, which is why Pei falls into it, but across 350,000 proteomes the
+  # overwhelming majority of PF03412 hits will be bacteriocin exporters. The
+  # active-site filter is the ONLY thing separating this arm from a pile of
+  # transporters, so `decoy_fdr` and the triad pass rate are reported per family,
+  # never pooled.
+  #
+  # DISABLED, DELIBERATELY, AND THIS IS NOT A TODO NOTE.
+  #
+  # Turning this on today would search PF03412, pool its hits with the C71 hits,
+  # align all of them to the PF12386 scaffold, and score them against the C71
+  # triad columns. A C39 protein does not align to PF12386; PeiR's Cys->His gap is
+  # 72 where C71's is 35. The hits would be found and then silently mangled, which
+  # is worse than not finding them.
+  #
+  # The `families:` block below specifies the per-family execution path. Until
+  # `triad_detect_filter.py` and `hmmalign` are split per family, this stays
+  # false, `pei_check.py` reports PeiR as unfindable, and the run does not lie
+  # about what it screened.
+  PF03412:
+    enabled: false
+    path: /ebio/abt3_scratch/jmarsh/jan/hmms/PF03412.hmm
+    threshold: cut_ga
+    role: specific
+    family: c39
 
-align_profile: PF12386             # alignment scaffold; must be the specific model
-specific_profile: PF12386          # triad columns are learned from these hits only
+# ---- Per-family rules ------------------------------------------------------
+# A family owns its alignment scaffold, its structure anchor and its triad
+# spacing prior. Nothing crosses between them without an explicit, tested map.
+#
+# THE REASON. In C71 the catalytic Cys->His gap is 35 (PeiW C198/H233, PeiP
+# C213/H248). PeiR's catalytic cysteine is C90, fixed by the C90A mutant (PDB
+# 8Z4N). Residue 125 -- C90+35 -- is a proline. The nearest downstream histidine
+# is H162, a gap of 72. Applying the C71 prior to a C39 sequence discards PeiR.
+# `pei_check.py` refuses to start a run in which that would happen.
+families:
+  c71:
+    align_profile: PF12386         # scaffold: the specific model, not the fold model
+    specific_profile: PF12386      # triad columns learned from these hits only
+    sensitivity_profiles: [SSF54001]
+    structure: /ebio/abt3_scratch/jmarsh/jan/structures/8jx4.cif
+    structure_numbering: PeiW
+    expected_gap_1_2: 35
+    expected_gap_2_3: 24           # PeiP's; PeiW's is 17. Tolerance must cover both.
+    gap_tolerance: 8
+    pei_class_applies: true        # Wang et al.'s V252/C265 partition is C71 numbering
+    seeds: [PeiW, PeiP]
+  c39:
+    align_profile: PF03412
+    specific_profile: PF03412
+    sensitivity_profiles: [SSF54001]
+    structure: /ebio/abt3_scratch/jmarsh/jan/structures/8z4h.cif   # PeiR, 2.0 A
+    structure_numbering: PeiR
+    structure_expect: {90: C}      # the C90A mutant is what makes this catalytic
+    # DELIBERATELY NULL. One sequence is not a prior. The C39 spacing is learned
+    # from the PF03412 hits themselves, anchored on C90 in 8Z4H, and the learned
+    # value is written to the report so it can be argued with.
+    expected_gap_1_2: null
+    expected_gap_2_3: null
+    gap_tolerance: null
+    pei_class_applies: false
+    seeds: [PeiR]
+    seeds_unresolved: [PeiG2, PeiTh2, PeiF3]   # accessions not published
+
+# Kept for backwards compatibility with the single-family scripts. Anything that
+# reads these two keys is operating on the C71 arm only, and should say so.
+align_profile: PF12386
+specific_profile: PF12386
 
 # Reject fragmentary hits: best domain must cover this fraction of the profile.
 min_profile_coverage: 0.0          # 0 = off. 0.5 is a defensible starting point.
@@ -142,8 +218,10 @@ redundancy:
   enabled: true
 
 # ---- Catalytic triad -------------------------------------------------------
-# PeiP's structure (PDB 8Z4F) shows a transglutaminase-like Cys-His-Asp triad,
-# so CHD is the hypothesis, not CHN. The detector still scores alternatives and
+# PeiW (8JX4) and PeiP (8Z4F) both use a Cys-His-Asp triad (Wang et al. 2025),
+# so CHD is the hypothesis, not CHN. Wang et al. call the fold papain-like
+# rather than transglutaminase-like; either way the triad is CHD and the
+# C198A/H233A/D250A mutants are inactive. The detector still scores alternatives and
 # writes them to triad_candidates.tsv, because a heuristic that cannot be
 # audited is not a result.
 triad:
@@ -152,7 +230,11 @@ triad:
   third_residue: D
   alt_third_residue: N             # scored for comparison only; null to skip
 
-  expected_gap_1_2: 35             # soft prior from your C213/H248/D272
+  # Your C213/H248/D272 are exactly PeiP's catalytic triad (Wang et al. 2025).
+  # PeiW's is C198/H233/D250. So the Cys->His gap is 35 in both, but the His->Asp
+  # gap is 24 in PeiP and 17 in PeiW. The prior below is PeiP's; the tolerance
+  # has to cover PeiW, which it does.
+  expected_gap_1_2: 35
   expected_gap_2_3: 24
   spacing_tolerance: 25
   spacing_weight: 0.35
@@ -164,6 +246,25 @@ triad:
   # Columns are learned from `specific_profile` hits only, then applied
   # unchanged to the SSF54001-only sequences in the same alignment.
   restrict_to_specific: true
+
+  # A sequence occupying fewer than this fraction of PF12386's match states was
+  # not placed by hmmalign in any meaningful sense. It is reported as
+  # `low_coverage`, NOT as triad-negative.
+  #
+  # This matters for the SSF54001 tier, and it matters a lot. SCOP 54001 spans
+  # ~22 families related to the papain catalytic core by insertion and by CIRCULAR
+  # PERMUTATION, transglutaminase cores among them. A permuted core carries a
+  # Cys-His-Asp triad in 3D but in a different sequential order, and the filter
+  # demands i < j < k in PF12386 coordinates. Such a protein cannot pass, and its
+  # failure must NOT be counted as evidence that transglutaminase-like proteins
+  # lack the Pei active site.
+  #
+  # `triad_filter_by_tier.tsv` therefore reports frac_triad_positive_of_testable.
+  # The denominator is the sequences the test could actually run on. If
+  # frac_testable is low for ssf_only, the PF12386 scaffold cannot address the
+  # transglutaminase question at all, and answering it needs a profile-profile map
+  # (HH-suite) or a structural superposition.
+  min_match_coverage: 0.5
 
   override_columns: null           # e.g. [112, 147, 171] after you audit
 
@@ -232,6 +333,302 @@ phyloglm:
   run_subgroup_models: true
   min_positives: 25                # skip a model with fewer positives than this
   seed: 12345
+
+# ============================================================================
+# Target-specificity analyses
+#
+# Pei cleaves the epsilon-isopeptide bond between ALANINE and lysine in the
+# pseudomurein cross-link. Kandler & Koenig 1978 (Arch Microbiol 118:141-152)
+# give the molar ratio Lys : Ala : Glu as 1 : 1.2 : 2 -- one alanine per subunit
+# -- so the alanine they report as completely replaced by threonine in
+# Methanobrevibacter ruminantium M1 is *the* P1 alanine. That is the substrate
+# axis this section tests.
+#
+# The same paper reports a second, independent substitution on the other side of
+# the scissile bond: about a quarter of the lysine in Methanobrevibacter smithii
+# PS is ornithine, whose delta-amine is one methylene shorter than a lysine
+# epsilon-amine. That is an S1' question, and the published chromogenic assay
+# (H-Glu-gamma-Ala-pNA) has no acceptor residue in it, so it cannot test it.
+#
+# Genus-level assignment is not merely uncertain, it is wrong: Methanobrevibacter
+# contains M. ruminantium (Thr/Lys), M. smithii (Ala/Orn) and M. arboriphilus
+# (Ala/Lys). scripts/cellwall_reference.py refuses to guess.
+#
+# The enzymes are two-module (four N-terminal PMBR repeats, PF09373; C-terminal
+# C71 catalytic domain), and the repeat array is the published candidate binding
+# determinant. So specificity has two axes -- which bond the groove cuts, and
+# which sacculus the repeats bind -- and this section measures both.
+# ============================================================================
+specificity:
+  enabled: true
+
+  # ---- domain architecture -----------------------------------------------
+  # Pfam-A.hmm, hmmpress'ed. Used to type every C71-carrying protein.
+  pfam_hmm: /ebio/abt3_projects/databases/pfam/Pfam-A.hmm
+  pmbr_accession: PF09373          # pseudomurein-binding repeat
+  catalytic_accession: PF12386
+  # Binding modules that would imply a *different* cell wall. A C71 catalytic
+  # domain fused to one of these, in a bacterium, is either a different
+  # substrate or a mis-assembly. Either way it is the interesting case.
+  accessory_binding_domains:
+    - PF01476   # LysM
+    - PF08239   # SH3_3  (SH3b)
+    - PF01471   # PG_binding_1
+    - PF01473   # CW_binding_1 (choline-binding)
+    - PF04122   # CW_2
+    - PF06347   # Peptidase_M23 partner? kept for architecture reporting only
+  hmmscan_evalue: 1e-5
+  min_domain_coverage: 0.5
+
+  # ---- the binding module --------------------------------------------------
+  # Visweswaran, Dijkstra & Kok 2011 (PLoS ONE 6:e21582) fused 1, 2 or 3 PMB
+  # motifs to GFP:
+  #
+  #   3 motifs -> binds the pseudomurein sacculus, and bacterial spheroplasts
+  #   2 motifs -> binds bacterial spheroplasts ONLY, not pseudomurein
+  #   1 motif  -> binds nothing
+  #   any      -> no binding to intact bacterial cells
+  #
+  # So <3 motifs means the protein cannot dock on an intact sacculus, whatever
+  # its active site looks like. The count stops being a covariate and becomes a
+  # phenotype -- which makes it load-bearing. A PMB motif is 30-35 residues, and
+  # a single dropped repeat flips the call. hmmscan therefore runs ONCE at
+  # `count_evalue_permissive` and domain_arch.py filters at both thresholds;
+  # proteins that change side are classed `pmbr_count_ambiguous` rather than
+  # assigned to whichever side the E-value picked.
+  #
+  # NOTE the abstract of that paper says "at least two of the three motifs are
+  # necessary for binding". The Results, the section heading, the title and the
+  # conclusion all say three are needed for pseudomurein; two suffice only for
+  # the lysozyme-treated bacterial spheroplasts. The code follows the Results.
+  #
+  # PMBR is NOT a pseudomurein marker. The domain binds NAG, the one sugar shared
+  # by murein and pseudomurein, and sticks to L. lactis and E. coli spheroplasts.
+  # It is also not Pei-specific: the S-layer protein MTH719 carries three motifs
+  # and no catalytic domain. Do not read "has PMBR" as "targets pseudomurein".
+  pmbr:
+    count_evalue_strict: 1e-5
+    count_evalue_permissive: 1e-2
+    # Binding is nil at pH 4.0, partial at 6.5, complete at 9.0 (pI 9.2), and the
+    # domain aggregates at pH 7.0. Every published Pei lysis assay runs at
+    # 7.0-7.85. PMB pIs span 3-10, so the pI is computed per protein from its own
+    # PMB span rather than borrowed.
+    report_pi: true
+
+  # ---- specificity-determining positions: which PMBR partition? ------------
+  # `count`             one group per repeat count (pmbr0, pmbr1, ...)
+  # `binding_competent` two groups, split at the 3-motif cliff
+  #
+  # Not both. They are nested: a column that separates 2-motif from 3-motif
+  # proteins will separate `pmbr2` from `pmbr3` as well, and counting that as
+  # replication across two partitions would double-count one piece of evidence.
+  # `binding_competent` is the default because the cliff is the hypothesis and
+  # the counts either side of it are noise.
+  pmbr_partition_mode: binding_competent
+
+  # ---- module trees --------------------------------------------------------
+  module_tree_mode: fast           # 'fast' = LG+F+G4 --fast; 'full' = MFP+UFBoot
+  module_max_tips: 3000
+  mantel_permutations: 9999
+
+  # ---- host cell-wall genotype --------------------------------------------
+  # One .hmm per marker. GA lines are used when present, otherwise
+  # `pmur_score_threshold`. The marker set defines the genotype vector.
+  pmur_hmm_dir: /ebio/abt3_scratch/jmarsh/jan/hmms/pmur
+  pmur_score_threshold: 30
+  # Genomes with fewer than this many markers are called "no pseudomurein
+  # pathway detected" rather than "Ala-type", because absent is not negative.
+  pmur_min_markers: 3
+
+  # ---- structure -----------------------------------------------------------
+  # Wang et al. 2025 (Int J Biol Macromol, S0141813025002211) deposited TWO
+  # structures, and this matters:
+  #
+  #   8JX4   PeiW catalytic domain (PeiW-CD, residues 138-284), 2.3 A, with
+  #          dipeptide co-crystals. Catalytic triad C198 / H233 / D250.
+  #   8Z4F   full-length PeiP.     Catalytic triad C213 / H248 / D272.
+  #
+  # Y174, V252 and C265 -- the substrate-binding residues that confer
+  # specificity -- are quoted in **PeiW** numbering. Pointing at 8Z4F while
+  # using those numbers, as an earlier version of this config did, silently
+  # selects the wrong residues. Use PeiW-CD, and `structure_expect` makes the
+  # mistake impossible to repeat.
+  structure: /ebio/abt3_scratch/jmarsh/jan/structures/8jx4.cif
+  structure_chain: A
+  structure_numbering: PeiW        # documentation; 'PeiP' if you swap to 8Z4F
+
+  # Aromatic-guidance and specificity residues (PeiW). Y174/Y176/Y178/Y231
+  # orient the substrate; V252 and C265 set the class (see below).
+  groove_seed_residues: [174, 252, 265]
+
+  # Hard identity check. groove_map.py exits non-zero if any of these auth
+  # residues is not the residue named here. This is what catches a structure /
+  # numbering mismatch before it corrupts the groove.
+  structure_expect:
+    174: Y     # oxyanion-hole tyrosine
+    198: C     # catalytic Cys
+    233: H     # catalytic His
+    250: D     # catalytic Asp
+    252: V     # class position 1
+    265: C     # class position 2  (the paper's motif line writes C266; see below)
+
+  # The conserved motif reported for the family, PeiW numbering:
+  #   Y174 x x Y177 ... N197 C198 x D200 x x Q203 ... C225 ... H233 ... D250 ... C266
+  # A literature-defined groove, used alongside the geometric 8 A shell.
+  groove_literature_residues: [174, 176, 177, 178, 197, 198, 200, 203,
+                               225, 231, 233, 250, 252, 265, 266]
+
+  groove_radius_a: 8.0
+  contact_radius_a: 8.0            # for coupling-pair contact validation
+  structure_offset: 0
+
+  # ---- the divalent metal nobody has located -------------------------------
+  # Subedi et al. 2015 (Archaea 2015:828693): 0.5 mM EDTA leaves PeiW and PeiP
+  # with <1% activity, and a divalent cation restores it completely. The two
+  # enzymes then part company:
+  #
+  #   PeiW   rescued by Ca > Mn > Mg > Ba > Ni      (promiscuous)
+  #   PeiP   rescued by Ca only; the rest give <15% (strict)
+  #
+  # Ca also confers thermostability: PeiW keeps all of its activity after 60 min
+  # at 80 C with Ca and loses half in 5 min without it.
+  #
+  # This is the sharpest measured biochemical difference between the two
+  # characterised enzymes, and nothing in the substrate groove or in Wang et al.'s
+  # four-class partition predicts it. If a cation is present in the coordinates,
+  # groove_map.py builds a coordination shell around it and sdp.py tests that
+  # shell for specificity-determining positions independently of the groove. If
+  # no cation is modelled -- and neither 8JX4 nor 8Z4F is reported with one --
+  # the pipeline says so and moves on. It does not invent a site.
+  metal_site:
+    enabled: true
+    ions: [CA, MG, MN, ZN, NI, BA, CO, FE]
+    coordination_radius_a: 3.2     # first shell, ion to protein heavy atom
+    shell_radius_a: 8.0            # second shell, for SDP enrichment
+    # Residues that can coordinate a hard divalent cation. Used to report how
+    # plausible a detected site is. Never used to place one.
+    coordinating_residues: [D, E, N, Q, S, T, H]
+
+  # ---- sentinels: proteins whose answer is already known --------------------
+  # PeiR is encoded by prophage Phi-mru of Methanobrevibacter ruminantium M1.
+  # M1 is the Thr-at-P1 organism (Kandler & Koenig 1978, that exact strain), it
+  # resists both PeiW and PeiP (Subedi et al. 2015), and PeiR lyses it while
+  # showing "little homology" to either.
+  #
+  # That is the prespecified hypothesis of this screen, and it was stated before
+  # any clustering was run: PEI SEQUENCE TRACKS HOST WALL CHEMISTRY. If it holds,
+  # PeiR should fall outside the PeiW/PeiP SSN cluster and should not be class I.
+  # The report checks both, and records whether PeiR was recovered by PF12386 at
+  # all or only by SSF54001 -- because if the curated gathering threshold misses
+  # the one enzyme known to cut a divergent wall, the screen is blind in exactly
+  # the direction it cares about.
+  sentinels:
+    - name: PeiR
+      host_species: s__Methanobrevibacter ruminantium
+      host_strain: M1
+      prophage: Phi-mru
+      expect_divergent_from: [PeiW, PeiP]
+      hypothesis: >-
+        a divergent wall (Thr at P1) is cut by a divergent enzyme: PeiR should
+        not cluster with PeiW/PeiP and should not be class I
+    - name: PeiW
+      host_species: s__Methanothermobacter wolfeii
+      prophage: PsiM100
+      expect_class: I
+    - name: PeiP
+      host_species: s__Methanothermobacter marburgensis
+      prophage: PsiM1/PsiM2
+      expect_class: I
+    # PF09373 without PF12386. A three-motif PMB domain on an S-layer protein,
+    # no catalytic domain, and it binds pseudomurein. If the screen calls this a
+    # Pei, the architecture step is not doing its job.
+    - name: MTH719
+      uniprot: O26815
+      host_species: s__Methanothermobacter thermautotrophicus
+      role: putative S-layer protein
+      expect_pmbr: 3
+      expect_catalytic: 0
+
+  # Bacteria known (as of Visweswaran et al. 2011) to carry PMB motifs, each of
+  # which also carries LysM. The bacterial arm of this screen should recover
+  # them. If it recovers PMBR in bacteria and NOT in these three, the Pfam
+  # threshold or the proteome set is wrong before any biology is discussed.
+  #
+  # Their existence is also why a bacterial C71+PMBR protein is not written off:
+  # the PMB domain binds NAG and sticks to lysozyme-treated bacterial
+  # spheroplasts, so exposed murein is a live hypothesis.
+  pmbr_bacteria_expected:
+    - s__Xanthomonas campestris
+    - s__Granulibacter bethesdensis
+    - s__Novosphingobium aromaticivorans
+
+  # ---- the published four-class partition ---------------------------------
+  # Wang et al. divide peptidase C71 into four classes on the identity of the
+  # two non-conserved residues that sit 3-4 A from the His-Asp centre. Every
+  # non-class-I combination they built into PeiW-CD lost activity; V+V retained
+  # about half.
+  #
+  #   class I    V252 + C265     (PeiW, PeiP)
+  #   class II   V252 + V265
+  #   class III  T/S252 + I265
+  #   class IV   A252 + M/W265
+  #
+  # This is an external, structure-grounded partition of the family that owes
+  # nothing to our k-means, and it predicts k = 4.
+  #
+  # CAUTION: V252 is two residues from the catalytic D250, so it falls INSIDE
+  # the +/-5 triad-flank barcode. pei_class is therefore *partly* determined by
+  # a barcode column, and sdp.py excludes both class positions from the SDP test
+  # whenever the pei_class partition is in use.
+  pei_class:
+    enabled: true
+    position_1: 252                # V in class I/II, T/S in III, A in IV
+    position_2: 265                # C in I, V in II, I in III, M/W in IV
+    position_2_alt: 266            # the motif line in the paper writes C266
+    classes:
+      I:   {p1: [V], p2: [C]}
+      II:  {p1: [V], p2: [V]}
+      III: {p1: [T, S], p2: [I]}
+      IV:  {p1: [A], p2: [M, W]}
+
+  # ---- specificity-determining positions ----------------------------------
+  # The active-site subgroups are k-means on the triad-flank barcode. Testing
+  # SDPs on those same columns is circular. SDPs are therefore called under
+  # partitions that did not see the barcode, and only kept if they replicate.
+  sdp_partitions: [tree_clade, ssn_cluster, pmbr_architecture, host_genus, pei_class]
+  sdp_min_partitions: 2            # replicate in >= this many to be called
+  sdp_min_group_size: 10
+  sdp_max_groups: 12
+  sdp_permutations: 1000
+  sdp_fdr: 0.05
+  # Permutations shuffle group labels WITHIN tree clades, so the null preserves
+  # phylogenetic structure instead of destroying it (which would make every
+  # phylogenetically clustered position look like an SDP).
+  sdp_null: within_clade
+  # Clades are cut by SUBTREE SIZE, not by a fixed depth. Cutting at a depth on
+  # an unbalanced tree yields singleton clades, and a within-clade shuffle over
+  # singletons is the identity permutation: the null becomes the observation and
+  # nothing can ever be called significant. It fails silently and looks exactly
+  # like "no signal". null_is_degenerate() detects the residual case and falls
+  # back to a global null, loudly.
+  sdp_clade_target_size: null      # null -> max(5, n_tips // 40)
+
+  # ---- selection -----------------------------------------------------------
+  selection:
+    enabled: true
+    # Prokka writes .ffn beside .faa; Prodigal writes it in prodigal_dir.
+    bacteria_ffn_from_faa: true    # s/\.faa$/.ffn/
+    max_seqs: 500                  # HyPhy is O(n) per site but not free
+    hyphy_methods: [FEL, MEME]
+    run_relax: false           # RELAX is NOT implemented; see scripts/selection.py. A true value is a hard error.
+    codon_alignment: pal2nal
+
+  # ---- prophage context ----------------------------------------------------
+  genomad_db: /ebio/abt3_projects/databases/genomad/genomad_db
+  genomad_enabled: true
+
+  # ---- experimental panel --------------------------------------------------
+  panel_size: 8                    # representatives to nominate for assay
 
 # ---- Plotting --------------------------------------------------------------
 plots:

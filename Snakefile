@@ -64,16 +64,35 @@ def _act(name):
 
 ENV_HMMER, ENV_PY, ENV_PHYLO = _act("hmmer"), _act("py"), _act("phylo")
 ENV_NET, ENV_PROD, ENV_R = _act("network"), _act("prodigal"), _act("r")
+ENV_SEL = _act("selection")
 
 if ENVS_ROOT:
-    for _n in ("hmmer", "py", "phylo", "network", "prodigal", "r"):
+    for _n in ("hmmer", "py", "phylo", "network", "prodigal", "r", "selection"):
         _p = os.path.join(ENVS_ROOT, _n, "bin", "activate")
         if not os.path.exists(_p):
             sys.exit(f"[c71] envs_root is set but {_p} does not exist. "
                      f"Run setup/install_envs.sh first, or set envs_root: null.")
     sys.stderr.write(f"[c71] using pre-built environments under {ENVS_ROOT}\n")
 
-PROFILE_NAMES = sorted(PROF)
+# A profile with `enabled: false` is declared but not searched. PF03412 (the C39
+# arm, which is where PeiR lives) is declared and disabled: searching it before
+# the per-family alignment path exists would pool C39 hits with C71 hits and score
+# them against C71 triad columns. Found and mangled is worse than not found.
+# Unconstrained wildcards default to `.+`, which matches dots and path separators.
+# `batch_{b}.{p}.domtblout` is then ambiguous the day a profile name contains a
+# dot, and `{b}` could in principle eat a directory boundary.
+wildcard_constraints:
+    b=r"\d+",
+    c=r"\d+",
+    p=r"[A-Za-z0-9_]+",
+
+PROFILE_NAMES = sorted(k for k, d in PROF.items() if d.get("enabled", True))
+DISABLED_PROFILES = sorted(set(PROF) - set(PROFILE_NAMES))
+if DISABLED_PROFILES:
+    import sys as _sys
+    print(f"[Snakefile] profiles declared but DISABLED: {DISABLED_PROFILES}. "
+          f"Any protein found only by these models will not be screened. See "
+          f"`rule pei_check`.", file=_sys.stderr)
 SPECIFIC      = config["specific_profile"]
 ALIGN_HMM     = os.path.join(WORK, "profiles", f"{config['align_profile']}.hmm")
 
@@ -119,6 +138,26 @@ def all_decoys(wildcards):
 
 
 # ============================================================================
+SPEC = config["specificity"]
+
+
+def specificity_targets():
+    if not SPEC.get("enabled", False):
+        return []
+    t = [os.path.join(TABDIR, "pei_class.tsv"),
+         os.path.join(TABDIR, "domain_architecture.tsv"),
+         os.path.join(TABDIR, "module_congruence.tsv"),
+         os.path.join(TABDIR, "cellwall_genotype.tsv"),
+         os.path.join(TABDIR, "groove_columns.tsv"),
+         os.path.join(TABDIR, "sdp_replicated.tsv"),
+         os.path.join(TABDIR, "lysis_reference_check.tsv"),
+         os.path.join(TABDIR, "pei_seed_check.tsv"),
+         os.path.join(TABDIR, "assay_panel.tsv")]
+    if SPEC["selection"].get("enabled", False):
+        t.append(os.path.join(TABDIR, "selection_sites.tsv"))
+    return t
+
+
 rule all:
     input:
         COMBINED,
@@ -131,6 +170,7 @@ rule all:
         os.path.join(TABDIR, "convergence.tsv"),
         os.path.join(TABDIR, "barcode_coupling.tsv"),
         os.path.join(TABDIR, "phyloglm_coefficients.tsv"),
+        specificity_targets(),
         os.path.join(FIGDIR, ".overview.done"),
         os.path.join(FIGDIR, ".tree.done"),
         os.path.join(FIGDIR, ".activesite.done"),
@@ -354,6 +394,7 @@ rule triad:
         afa=os.path.join(WORK, "triad_pass_matchcols.afa"),
         colstats=os.path.join(TABDIR, "alignment_column_stats.tsv"),
         tiers=os.path.join(TABDIR, "triad_filter_by_tier.tsv"),
+        outcomes=os.path.join(TABDIR, "triad_outcomes.tsv"),
     params:
         cfg=CFG,
     conda: "envs/py.yaml"
@@ -363,7 +404,8 @@ rule triad:
         "--combined {input.combined} --idmap {input.idmap} --weights {input.weights} "
         "--out-candidates {output.cands} --out-chosen {output.chosen} "
         "--out-keep {output.keep} --out-afa {output.afa} "
-        "--out-colstats {output.colstats} --out-tiers {output.tiers} &> {log}"
+        "--out-colstats {output.colstats} --out-tiers {output.tiers} "
+        "--out-outcomes {output.outcomes} &> {log}"
 
 
 rule c71_faa:
@@ -372,12 +414,14 @@ rule c71_faa:
         idmap=os.path.join(WORK, "hits_idmap.tsv.gz"),
     output:
         faa=os.path.join(OUTDIR, "c71.faa"),
+        evidence=os.path.join(TABDIR, "c71_evidence.tsv"),
     threads: 8
     conda: "envs/py.yaml"
     log: os.path.join(LOGDIR, "c71_faa.log")
     shell:
         "{ENV_PY}python {SCRIPTS}/extract_seqs.py --keep-ids {input.keep} --idmap {input.idmap} "
-        "--out-faa {output.faa} --threads {threads} &> {log}"
+        "--out-faa {output.faa} --out-evidence {output.evidence} "
+        "--threads {threads} &> {log}"
 
 
 # ---------------------------------------------------------------------------
@@ -455,16 +499,252 @@ rule coupling:
         assign=os.path.join(TABDIR, "subgroup_assignments.tsv"),
         chosen=os.path.join(WORK, "triad_columns.json"),
         weights=os.path.join(TABDIR, "sequence_weights.tsv"),
+        contacts=(os.path.join(WORK, "groove_contacts.tsv")
+                  if SPEC.get("enabled") else []),
+        groove=(os.path.join(TABDIR, "groove_columns.tsv")
+                if SPEC.get("enabled") else []),
     output:
         table=os.path.join(TABDIR, "barcode_coupling.tsv"),
     params:
         figdir=FIGDIR, cfg=CFG,
+        structure=("--contacts " + os.path.join(WORK, "groove_contacts.tsv") +
+                   " --groove " + os.path.join(TABDIR, "groove_columns.tsv")
+                   if SPEC.get("enabled") else ""),
     conda: "envs/py.yaml"
     log: os.path.join(LOGDIR, "coupling.log")
     shell:
         "{ENV_PY}python {SCRIPTS}/coupling.py --assign {input.assign} --chosen {input.chosen} "
         "--weights {input.weights} --config {params.cfg} --figdir {params.figdir} "
-        "--out {output.table} &> {log}"
+        "{params.structure} --out {output.table} &> {log}"
+
+
+# ===========================================================================
+# Target-specificity block. Two axes: which bond the groove cuts, and which
+# sacculus the PMBR repeats bind. See README.
+# ===========================================================================
+rule domain_arch:
+    """PMBR repeat count and accessory binding modules for every C71 protein."""
+    input:
+        faa=os.path.join(OUTDIR, "c71.faa"),
+        pfam=SPEC["pfam_hmm"],
+    output:
+        arch=os.path.join(TABDIR, "domain_architecture.tsv"),
+        domains=os.path.join(TABDIR, "domain_hits.tsv"),
+        domtbl=os.path.join(WORK, "pfam_scan.domtblout"),
+    params:
+        cfg=CFG,
+    threads: 8
+    conda: "envs/hmmer.yaml"
+    log: os.path.join(LOGDIR, "domain_arch.log")
+    shell:
+        "{ENV_HMMER}python {SCRIPTS}/domain_arch.py --faa {input.faa} --config {params.cfg} "
+        "--domtbl {output.domtbl} --out-arch {output.arch} --out-domains {output.domains} "
+        "--threads {threads} &> {log}"
+
+
+rule module_trees:
+    """Does the binding module share a history with the catalytic module?"""
+    input:
+        faa=os.path.join(OUTDIR, "c71.faa"),
+        arch=os.path.join(TABDIR, "domain_architecture.tsv"),
+        reps=os.path.join(TABDIR, "tree_representatives.tsv"),
+    output:
+        table=os.path.join(TABDIR, "module_congruence.tsv"),
+    params:
+        cfg=CFG, workdir=os.path.join(WORK, "modules"), figdir=FIGDIR,
+    threads: 16
+    conda: "envs/phylo.yaml"
+    log: os.path.join(LOGDIR, "module_trees.log")
+    shell:
+        "{ENV_PHYLO}python {SCRIPTS}/module_trees.py --faa {input.faa} --arch {input.arch} "
+        "--reps {input.reps} --config {params.cfg} --workdir {params.workdir} "
+        "--figdir {params.figdir} --out {output.table} --threads {threads} &> {log}"
+
+
+rule cellwall_genotype:
+    """Pmur marker screen: what cross-link does the host actually build?"""
+    input:
+        table=os.path.join(WORK, "sample_table_unified.tsv"),
+        genomes=os.path.join(TABDIR, "genome_level_table.tsv"),
+    output:
+        table=os.path.join(TABDIR, "cellwall_genotype.tsv"),
+        markers=os.path.join(TABDIR, "pmur_marker_stats.tsv"),
+    params:
+        cfg=CFG, workdir=os.path.join(WORK, "cellwall"),
+    threads: 16
+    conda: "envs/hmmer.yaml"
+    log: os.path.join(LOGDIR, "cellwall_genotype.log")
+    shell:
+        "{ENV_HMMER}python {SCRIPTS}/cellwall_genotype.py --table {input.table} "
+        "--genomes {input.genomes} --config {params.cfg} --workdir {params.workdir} "
+        "--out {output.table} --out-markers {output.markers} --threads {threads} &> {log}"
+
+
+rule groove_map:
+    """Substrate groove from 8JX4 (PeiW-CD), mapped onto PF12386 match states.
+
+    8JX4, not 8Z4F: Y174/V252/C265 are PeiW numbering. `structure_expect` in
+    config.yaml asserts the identity of every named residue and groove_map.py
+    exits non-zero on a mismatch. Also locates a divalent cation if one is
+    modelled, and says so plainly if none is.
+    """
+    input:
+        chosen=os.path.join(WORK, "triad_columns.json"),
+        hmm=ALIGN_HMM,
+        structure=SPEC["structure"],
+    output:
+        columns=os.path.join(TABDIR, "groove_columns.tsv"),
+        contacts=os.path.join(WORK, "groove_contacts.tsv"),
+        json=os.path.join(TABDIR, "groove_definition.json"),
+    params:
+        cfg=CFG, workdir=os.path.join(WORK, "groove"),
+    conda: "envs/hmmer.yaml"
+    log: os.path.join(LOGDIR, "groove_map.log")
+    shell:
+        "{ENV_HMMER}python {SCRIPTS}/groove_map.py --config {params.cfg} "
+        "--align-hmm {input.hmm} --chosen {input.chosen} --workdir {params.workdir} "
+        "--out-columns {output.columns} --out-contacts {output.contacts} "
+        "--out-json {output.json} &> {log}"
+
+
+rule pei_class:
+    """The published four-class partition of peptidase C71 (Wang et al. 2025)."""
+    input:
+        afa=os.path.join(WORK, "triad_pass_matchcols.afa"),
+        groove_json=os.path.join(TABDIR, "groove_definition.json"),
+        assign=os.path.join(TABDIR, "subgroup_assignments.tsv"),
+        ssn=os.path.join(TABDIR, "ssn_clusters.tsv"),
+        weights=os.path.join(TABDIR, "sequence_weights.tsv"),
+    output:
+        table=os.path.join(TABDIR, "pei_class.tsv"),
+        agreement=os.path.join(TABDIR, "pei_class_vs_subgroup.tsv"),
+    params:
+        cfg=CFG, figdir=FIGDIR,
+    conda: "envs/py.yaml"
+    log: os.path.join(LOGDIR, "pei_class.log")
+    shell:
+        "{ENV_PY}python {SCRIPTS}/pei_class.py --afa {input.afa} "
+        "--groove-json {input.groove_json} --assign {input.assign} --ssn {input.ssn} "
+        "--weights {input.weights} --config {params.cfg} --figdir {params.figdir} "
+        "--out {output.table} --out-agreement {output.agreement} &> {log}"
+
+
+rule sdp:
+    """Specificity-determining positions, replicated across the partitions."""
+    input:
+        afa=os.path.join(WORK, "triad_pass_matchcols.afa"),
+        pei_class=os.path.join(TABDIR, "pei_class.tsv"),
+        groove_json=os.path.join(TABDIR, "groove_definition.json"),
+        assign=os.path.join(TABDIR, "subgroup_assignments.tsv"),
+        arch=os.path.join(TABDIR, "domain_architecture.tsv"),
+        ssn=os.path.join(TABDIR, "ssn_clusters.tsv"),
+        tree=os.path.join(OUTDIR, "tree", "c71.treefile"),
+        merged=MERGED,
+        idmap=os.path.join(WORK, "hits_idmap.tsv.gz"),
+        groove=os.path.join(TABDIR, "groove_columns.tsv"),
+        weights=os.path.join(TABDIR, "sequence_weights.tsv"),
+    output:
+        table=os.path.join(TABDIR, "sdp_replicated.tsv"),
+        concordance=os.path.join(TABDIR, "sdp_concordance.tsv"),
+    params:
+        cfg=CFG, figdir=FIGDIR,
+    conda: "envs/py.yaml"
+    log: os.path.join(LOGDIR, "sdp.log")
+    shell:
+        "{ENV_PY}python {SCRIPTS}/sdp.py --afa {input.afa} --assign {input.assign} "
+        "--arch {input.arch} --ssn {input.ssn} --tree {input.tree} --merged {input.merged} "
+        "--idmap {input.idmap} --groove {input.groove} --groove-json {input.groove_json} "
+        "--pei-class {input.pei_class} --weights {input.weights} "
+        "--config {params.cfg} --figdir {params.figdir} --out {output.table} "
+        "--out-concordance {output.concordance} &> {log}"
+
+
+rule selection:
+    """dN/dS on the groove versus the domain core.
+
+    Takes `hits.sto` and `c71.faa`, NOT the match-column .afa. Ungapping a
+    match-column row does not give you the protein -- inserts and trimmed termini
+    are gone -- so an exact translated CDS match against it never succeeds, and
+    threading a full CDS through it misassigns codons in frame.
+    """
+    input:
+        sto=os.path.join(WORK, "hits.sto"),
+        c71=os.path.join(OUTDIR, "c71.faa"),
+        idmap=os.path.join(WORK, "hits_idmap.tsv.gz"),
+        keep=os.path.join(WORK, "triad_pass_ids.txt"),
+        groove=os.path.join(TABDIR, "groove_columns.tsv"),
+        chosen=os.path.join(WORK, "triad_columns.json"),
+    output:
+        table=os.path.join(TABDIR, "selection_sites.tsv"),
+    params:
+        cfg=CFG, workdir=os.path.join(WORK, "selection"), figdir=FIGDIR,
+    threads: 16
+    conda: "envs/selection.yaml"
+    log: os.path.join(LOGDIR, "selection.log")
+    shell:
+        "{ENV_SEL}python {SCRIPTS}/selection.py --sto {input.sto} --faa {input.c71} "
+        "--idmap {input.idmap} "
+        "--keep {input.keep} --groove {input.groove} --chosen {input.chosen} "
+        "--config {params.cfg} --workdir {params.workdir} --figdir {params.figdir} "
+        "--out {output.table} --threads {threads} &> {log}"
+
+
+rule pei_check:
+    """Refuse to start a run whose rules would discard the proteins it seeks.
+
+    PeiR is PF03412, not PF12386, and its Cys->His gap is 72, not 35. A C71-only
+    screen with a C71 spacing prior throws it away. This runs in milliseconds and
+    exits non-zero before anything is searched.
+    """
+    output:
+        table=os.path.join(TABDIR, "pei_seed_check.tsv"),
+    params:
+        cfg=CFG,
+    conda: "envs/py.yaml"
+    log: os.path.join(LOGDIR, "pei_check.log")
+    shell:
+        "{ENV_PY}python {SCRIPTS}/pei_check.py --config {params.cfg} "
+        "--out {output.table} --strict &> {log}"
+
+
+rule lysis_check:
+    """Score the host-chemistry rule against the measured lysis panel.
+
+    Pure literature: no inputs from the screen, so it runs in milliseconds and
+    fails before 350,000 proteomes are searched. Subedi et al. 2015 is the only
+    experiment in this project that can prove the specificity model wrong.
+    """
+    output:
+        table=os.path.join(TABDIR, "lysis_reference_check.tsv"),
+        substrates=os.path.join(TABDIR, "pei_substrate_specificity.tsv"),
+    conda: "envs/py.yaml"
+    log: os.path.join(LOGDIR, "lysis_check.log")
+    shell:
+        "{ENV_PY}python {SCRIPTS}/lysis_check.py --out {output.table} "
+        "--out-substrates {output.substrates} --strict &> {log}"
+
+
+rule assay_panel:
+    """Which proteins to synthesise, and what each one predicts."""
+    input:
+        afa=os.path.join(WORK, "triad_pass_matchcols.afa"),
+        sdp=os.path.join(TABDIR, "sdp_replicated.tsv"),
+        arch=os.path.join(TABDIR, "domain_architecture.tsv"),
+        cellwall=os.path.join(TABDIR, "cellwall_genotype.tsv"),
+        idmap=os.path.join(WORK, "hits_idmap.tsv.gz"),
+        assign=os.path.join(TABDIR, "subgroup_assignments.tsv"),
+        weights=os.path.join(TABDIR, "sequence_weights.tsv"),
+    output:
+        table=os.path.join(TABDIR, "assay_panel.tsv"),
+    params:
+        cfg=CFG, figdir=FIGDIR,
+    conda: "envs/py.yaml"
+    log: os.path.join(LOGDIR, "assay_panel.log")
+    shell:
+        "{ENV_PY}python {SCRIPTS}/assay_panel.py --afa {input.afa} --sdp {input.sdp} "
+        "--arch {input.arch} --cellwall {input.cellwall} --idmap {input.idmap} "
+        "--assign {input.assign} --weights {input.weights} --config {params.cfg} "
+        "--figdir {params.figdir} --out {output.table} &> {log}"
 
 
 # ---------------------------------------------------------------------------

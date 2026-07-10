@@ -22,6 +22,21 @@ The per-tier pass rates go to `triad_filter_by_tier.tsv`. If ssf_only sequences
 pass at anything like the specific-tier rate, either SSF54001 is more specific
 than advertised or the columns are not diagnostic. Both are worth knowing.
 
+What the ssf_only pass rate does NOT tell you
+---------------------------------------------
+SCOP 54001 contains roughly 22 families that differ from the papain catalytic core
+by insertion and by CIRCULAR PERMUTATION -- the transglutaminase core among them.
+A permuted core presents its Cys, His and Asp in a different sequential order. This
+filter selects columns with i < j < k in PF12386 coordinates and then demands C, H
+and D at exactly those columns. It cannot see a permuted triad, and hmmalign will
+not place a remote homologue's catalytic residues on PF12386 match states anyway.
+
+So a sequence can fail here for three different reasons, and the tier table now
+separates them: `triad_negative` (the test ran, the answer was no),
+`gapped_at_triad`, and `low_coverage` (the test never ran). Only the first is a
+result. Reading the other two as "this protein lacks the Pei active site" is an
+alignment failure wearing a biological conclusion.
+
 Weighting
 ---------
 Residue frequencies are redundancy-weighted (1 / cluster size at 90% identity).
@@ -30,9 +45,14 @@ conserved.
 
 Residue identity
 ----------------
-The PeiP structure (PDB 8Z4F) shows a transglutaminase-like Cys-His-Asp triad,
-so CHD is the hypothesis. CHN is scored alongside and written out, because a
-heuristic you cannot audit is not a result.
+Both solved structures use a Cys-His-Asp triad: PeiW-CD (8JX4) C198/H233/D250
+and PeiP (8Z4F) C213/H248/D272, with every alanine mutant inactive (Wang et al.
+2025). CHD is therefore the hypothesis, not CHN. CHN is scored alongside and
+written out anyway, because a heuristic you cannot audit is not a result.
+
+Note the spacing: the Cys->His gap is 35 in both, but the His->Asp gap is 24 in
+PeiP and 17 in PeiW. The spacing prior in config is PeiP's; the tolerance covers
+PeiW. Do not tighten it.
 """
 from __future__ import annotations
 
@@ -112,12 +132,16 @@ def main() -> None:
     ap.add_argument("--out-afa", required=True)
     ap.add_argument("--out-colstats", required=True)
     ap.add_argument("--out-tiers", required=True)
+    ap.add_argument("--out-outcomes", default=None,
+                    help="per-sequence outcome: why each sequence was kept or dropped")
     a = ap.parse_args()
 
     full = load_config(a.config)
     cfg = full["triad"]
     for p in (a.out_candidates, a.out_chosen, a.out_keep, a.out_afa, a.out_colstats,
-              a.out_tiers):
+              a.out_tiers, a.out_outcomes):
+        if p is None:
+            continue
         os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
 
     names, arr = load_matrix(a.sto)
@@ -210,27 +234,127 @@ def main() -> None:
             print(f"[triad] hypothesis {h}: score={b[0]:.4f} cols={b[1:4]}", file=sys.stderr)
 
     # --- apply to EVERY sequence, both tiers --------------------------------
+    #
+    # A sequence that fails this test has failed it for one of three reasons, and
+    # they are not the same reason.
+    #
+    #   triad_negative   the sequence occupies the triad columns and the residues
+    #                    are not C/H/D. A real negative. The test ran and the
+    #                    answer was no.
+    #
+    #   gapped_at_triad  at least one triad column is a gap. The test never ran.
+    #
+    #   low_coverage     the sequence occupies fewer than `min_match_coverage` of
+    #                    the profile's match states, so hmmalign could not place
+    #                    it. The test never ran.
+    #
+    # Collapsing the last two into "negative" is how an alignment failure becomes
+    # a biological conclusion. It matters most for the ssf_only tier: SCOP 54001
+    # contains ~22 families that differ from the papain core by INSERTION and
+    # CIRCULAR PERMUTATION. A permuted catalytic core has its Cys, His and Asp in
+    # a different sequential order, and this filter demands i < j < k in PF12386
+    # coordinates. It cannot see a permuted triad even when the 3D active site is
+    # identical. Reporting that as "no triad" would be a false statement about
+    # transglutaminase-like proteins.
+    coverage = (arr != GAP).sum(axis=1) / float(L)
+    min_cov = float(cfg.get("min_match_coverage", 0.5))
+    gapped = ((arr[:, i] == GAP) | (arr[:, j] == GAP) | (arr[:, k] == GAP))
+    low_cov = coverage < min_cov
+
     mask = (arr[:, i] == ord(r1)) & (arr[:, j] == ord(r2)) & (arr[:, k] == ord(r3))
     n_keep = int(mask.sum())
     if n_keep == 0:
         sys.exit(f"[triad] chosen columns {(i, j, k)} retain zero sequences.")
+
+    # The residual hole, stated rather than papered over. A permuted core that
+    # happens to occupy all three columns with the wrong residues is scored
+    # `triad_negative` and is indistinguishable, by any column test, from a
+    # protein that simply lacks the site. What CAN be reported cheaply is whether
+    # the sequence carries a cysteine, a histidine and an aspartate anywhere at
+    # all: if it does not, no permutation could rescue it; if it does, the
+    # negative is not safe and needs a superposition or a profile-profile map.
+    has_c = (arr == ord(r1)).any(axis=1)
+    has_h = (arr == ord(r2)).any(axis=1)
+    has_d = (arr == ord(r3)).any(axis=1)
+    has_all_three = has_c & has_h & has_d
+
+    outcome = np.full(n, "triad_negative", dtype=object)
+    outcome[low_cov] = "low_coverage"
+    outcome[gapped & ~low_cov] = "gapped_at_triad"
+    outcome[mask] = "triad_positive"
+    if (mask & (low_cov | gapped)).any():
+        sys.exit("[triad] a sequence is triad-positive and simultaneously gapped "
+                 "or low-coverage. The coordinate system is inconsistent.")
+    testable = mask | (outcome == "triad_negative")
 
     tiers = []
     for tier in ("specific", "ssf_only"):
         m = evidence.to_numpy() == tier
         if not m.any():
             continue
+        n_test = int((m & testable).sum())
+        neg = m & (outcome == "triad_negative")
         tiers.append({
             "evidence": tier,
             "n_aligned": int(m.sum()),
+            "n_testable": n_test,
+            "n_low_coverage": int((m & (outcome == "low_coverage")).sum()),
+            "n_gapped_at_triad": int((m & (outcome == "gapped_at_triad")).sum()),
+            "n_triad_negative": int(neg.sum()),
+            # negatives that still carry a C, an H and a D somewhere. A circular
+            # permutation of the catalytic core would look exactly like this, so
+            # these negatives are not safe.
+            "n_negative_with_all_three_residues": int((neg & has_all_three).sum()),
             "n_triad_positive": int((m & mask).sum()),
-            "frac_triad_positive": float((m & mask).sum() / m.sum()),
+            # rate over the sequences the test could actually run on. The old
+            # denominator was n_aligned, which silently counted unalignable
+            # sequences as evidence that the columns discriminate.
+            "frac_triad_positive_of_testable": (float((m & mask).sum() / n_test)
+                                                if n_test else float("nan")),
+            "frac_testable": float(n_test / m.sum()),
             "effective_n_aligned": float(w[m].sum()),
             "effective_n_triad_positive": float(w[m & mask].sum()),
         })
     tdf = pd.DataFrame(tiers)
     tdf.to_csv(a.out_tiers, sep="\t", index=False)
     print(tdf.to_string(index=False), file=sys.stderr)
+
+    if a.out_outcomes:
+        pd.DataFrame({"seq_id": names, "evidence": evidence.to_numpy(),
+                      "match_coverage": np.round(coverage, 4),
+                      "outcome": outcome,
+                      f"has_{r1}_{r2}_{r3}_anywhere": has_all_three.astype(int),
+                      }).to_csv(a.out_outcomes, sep="\t", index=False)
+
+    # The warning that stops an alignment failure being read as biology.
+    s = tdf.set_index("evidence")
+    if "ssf_only" in s.index:
+        n_unsafe = int(s.loc["ssf_only", "n_negative_with_all_three_residues"])
+        n_neg = int(s.loc["ssf_only", "n_triad_negative"])
+        if n_unsafe:
+            print(f"\n[triad] {n_unsafe} of {n_neg} SSF54001-only `triad_negative` "
+                  f"sequences carry a {r1}, an {r2} and a {r3} somewhere in the "
+                  f"aligned region, just not at the triad columns. A circular "
+                  f"permutation of the catalytic core looks exactly like that. "
+                  f"Those negatives are not safe and this filter cannot make them "
+                  f"safe: superpose them on the structure, or map the profiles.",
+                  file=sys.stderr)
+        ft = float(s.loc["ssf_only", "frac_testable"])
+        if ft < 0.5:
+            print(
+                f"\n[triad] WARNING: only {100 * ft:.1f}% of the {int(s.loc['ssf_only', 'n_aligned'])} "
+                f"SSF54001-only sequences could be tested at all. The rest are "
+                f"gapped at the triad columns or below {min_cov:.0%} match-state "
+                f"coverage.\n"
+                f"[triad]   SCOP 54001 contains ~22 families related to the papain "
+                f"core by insertion and CIRCULAR PERMUTATION. A permuted triad has "
+                f"its Cys/His/Asp in a different sequential order; this filter "
+                f"requires i<j<k in PF12386 coordinates and cannot see one.\n"
+                f"[triad]   Do NOT read the ssf_only pass rate as 'transglutaminase-"
+                f"like proteins lack the Pei active site'. It says the PF12386 "
+                f"scaffold cannot address the question. Answering it needs a "
+                f"profile-profile map (HH-suite) or a structural superposition, "
+                f"not a column triple.", file=sys.stderr)
 
     chosen = {
         "source": source,
@@ -249,6 +373,9 @@ def main() -> None:
         "hypotheses_scored": {h: {"score": b[0], "columns": list(b[1:4])}
                               for h, b in ranked.items()},
         "by_tier": tiers,
+        "min_match_coverage": min_cov,
+        "outcome_census": {k: int(v) for k, v in
+                           pd.Series(outcome).value_counts().items()},
     }
     with open(a.out_chosen, "w") as fh:
         json.dump(chosen, fh, indent=2)

@@ -70,19 +70,50 @@ message(sprintf("[phyloglm] %d searched genomes", nrow(dat)))
 aggregate_to_tips <- function(d) {
   sgcols <- grep("^sg_", names(d), value = TRUE)
   numcov <- intersect(COV, names(d))
-  agg <- d[, c(
-    list(n_genomes = .N,
-         has_c71 = as.integer(any(has_c71 == 1)),
-         has_specific = as.integer(any(has_specific == 1)),
-         has_hit = as.integer(any(has_hit == 1)),
-         prevalence_within_species = mean(has_c71),
-         n_c71 = sum(n_c71),
-         domain = domain[1],
-         taxon = taxon[1]),
-    lapply(setNames(numcov, numcov), function(x) mean(x, na.rm = TRUE)),
-    lapply(setNames(sgcols, sgcols), function(x) as.integer(any(x == 1)))
-  ), by = tree_tip]
+
+  # WAS: lapply(setNames(numcov, numcov), function(x) mean(x, na.rm = TRUE))
+  #
+  # `setNames(numcov, numcov)` is a character vector of column NAMES, so lapply
+  # passed each name as a string and R evaluated mean("completeness"), which is
+  # NA with a warning. Every covariate became NA for every species,
+  # complete.cases() below then dropped every row, and the phylogenetic
+  # regression -- the headline inference -- never ran. Every sg_* indicator
+  # became 0 for the same reason, so the subgroup models were all skipped for
+  # "0 positives".
+  #
+  # It failed silently and looked like a clean run. `.SD`/`.SDcols` passes the
+  # columns themselves.
+  base <- d[, .(n_genomes = .N,
+                has_c71 = as.integer(any(has_c71 == 1)),
+                has_specific = as.integer(any(has_specific == 1)),
+                has_hit = as.integer(any(has_hit == 1)),
+                prevalence_within_species = mean(has_c71),
+                n_c71 = sum(n_c71),
+                domain = domain[1],
+                taxon = taxon[1]), by = tree_tip]
+
+  agg <- base
+  if (length(numcov)) {
+    num <- d[, lapply(.SD, mean, na.rm = TRUE), by = tree_tip, .SDcols = numcov]
+    agg <- merge(agg, num, by = "tree_tip", all.x = TRUE)
+  }
+  if (length(sgcols)) {
+    sg <- d[, lapply(.SD, function(z) as.integer(any(z == 1))), by = tree_tip,
+            .SDcols = sgcols]
+    agg <- merge(agg, sg, by = "tree_tip", all.x = TRUE)
+  }
   agg[, log10_n_genomes := log10(n_genomes)]
+
+  # Turn the silent failure into a loud one. If a covariate is all-NA after
+  # aggregation, something is wrong with the aggregation, not with the data.
+  for (cc in numcov) {
+    if (all(is.na(agg[[cc]]))) {
+      stop(sprintf("[phyloglm] covariate '%s' is NA for every species after ",
+                   cc),
+           "aggregation. That is an aggregation bug, not missing data: ",
+           sprintf("the input had %d non-NA values.", sum(!is.na(d[[cc]]))))
+    }
+  }
   agg[]
 }
 
@@ -119,6 +150,15 @@ prep <- function(d, treefile) {
 }
 
 # Rubin's rules across replicate fits.
+#
+# The reference distribution is t with the Rubin df, not the normal. With m = 20
+# replicates the normal is mildly anticonservative, and reporting p from a z when
+# the variance itself was estimated from 20 numbers is not defensible.
+#
+# Caveat, stated because it changes how the fmi should be read: these replicates
+# are overlapping subsamples of ONE dataset (all positives are reused every time),
+# not independent imputations. The between-replicate variance b therefore
+# underestimates true sampling variance, and the Rubin analogy is approximate.
 pool <- function(fits) {
   terms <- Reduce(intersect, lapply(fits, function(f) rownames(f)))
   m <- length(fits)
@@ -127,11 +167,15 @@ pool <- function(fits) {
     se  <- sapply(fits, function(f) f[tm, "StdErr"])
     qbar <- mean(est); ubar <- mean(se^2); b <- if (m > 1) var(est) else 0
     tot  <- ubar + (1 + 1 / m) * b
-    z    <- qbar / sqrt(tot)
+    tstat <- qbar / sqrt(tot)
+    fmi <- ((1 + 1 / m) * b) / tot
+    # Rubin (1987) df. Infinite when b == 0 (a single replicate), which reduces
+    # to the normal, correctly.
+    nu <- if (m > 1 && b > 0) (m - 1) * (1 + ubar / ((1 + 1 / m) * b))^2 else Inf
+    pval <- if (is.finite(nu)) 2 * pt(-abs(tstat), df = nu) else 2 * pnorm(-abs(tstat))
     data.table(term = tm, estimate = qbar, std_error = sqrt(tot),
-               z = z, p = 2 * pnorm(-abs(z)),
-               odds_ratio = exp(qbar), n_replicates = m,
-               fmi = ((1 + 1 / m) * b) / tot)
+               z = tstat, p = pval, rubin_df = nu,
+               odds_ratio = exp(qbar), n_replicates = m, fmi = fmi)
   }))
 }
 
@@ -160,7 +204,7 @@ fit_one <- function(d, tr, response, label, domain) {
 
   ntip <- length(tr$tip.label)
   reps <- if (ntip > P$max_tips) P$n_replicates else 1L
-  fits <- list(); alphas <- numeric(0)
+  fits <- list(); alphas <- numeric(0); n_bad <- 0L
   for (r in seq_len(reps)) {
     if (ntip > P$max_tips) {
       pos <- which(y == 1); neg <- which(y == 0)
@@ -169,21 +213,66 @@ fit_one <- function(d, tr, response, label, domain) {
       idx  <- c(sample(pos, npos), sample(neg, nneg))
       dd <- d[idx]; tt <- keep.tip(tr, dd$tree_tip); dd <- dd[match(tt$tip.label, tree_tip)]
     } else { dd <- d; tt <- tr }
-    fit <- try(phyloglm(form, data = as.data.frame(dd), phy = tt,
+
+    # phylolm aligns the design matrix to the tree by ROW NAME. `as.data.frame`
+    # on a data.table gives integer row names, so without this the model is
+    # either rejected (caught by try(), silently leaving only the non-phylogenetic
+    # glm in the output) or, worse, fitted on covariates misaligned to tips.
+    ddf <- as.data.frame(dd)
+    rownames(ddf) <- ddf$tree_tip
+
+    fit <- try(phyloglm(form, data = ddf, phy = tt,
                         method = "logistic_MPLE", btol = P$btol,
                         boot = 0), silent = TRUE)
     if (inherits(fit, "try-error")) { message("    phyloglm failed on a replicate"); next }
-    s <- summary(fit)$coefficients
+
+    # phyloglm returns a completed object when the alpha search hits its bound.
+    # The MPLE standard errors are then not trustworthy, and nothing throws. A
+    # plausible number from a fit that did not converge is the worst outcome, so
+    # discard the replicate rather than pool it.
+    #
+    # Only public fields are inspected. `convergence` is absent in some phylolm
+    # versions; treat absent as "no complaint" rather than guessing at internals.
+    sm <- try(summary(fit)$coefficients, silent = TRUE)
+    conv <- tryCatch(as.integer(fit$convergence), error = function(e) 0L)
+    if (length(conv) != 1L || is.na(conv)) conv <- 0L
+    alpha <- tryCatch(as.numeric(fit$alpha), error = function(e) NA_real_)
+    at_bound <- isTRUE(is.finite(alpha) &&
+                       (alpha >= P$btol * 0.999 || alpha <= 1e-7))
+    bad_se <- inherits(sm, "try-error") || !all(is.finite(sm[, 2]))
+    if (conv != 0L || bad_se || at_bound) {
+      reason <- paste(c(if (conv != 0L) "convergence != 0",
+                        if (bad_se) "non-finite standard errors",
+                        if (at_bound) "alpha at the search boundary"),
+                      collapse = "; ")
+      message(sprintf("    replicate discarded (alpha=%.4g): %s", alpha, reason))
+      n_bad <- n_bad + 1L
+      next
+    }
+    s <- sm
     colnames(s)[1:2] <- c("Estimate", "StdErr")
     fits[[length(fits) + 1]] <- s
     alphas <- c(alphas, fit$alpha)
   }
-  if (!length(fits)) return(gl)
+  if (!length(fits)) {
+    message(sprintf("  %s/%s: NO phyloglm replicate converged (%d discarded). "
+                    , domain, label, n_bad),
+            "Reporting the non-phylogenetic glm ONLY. Do not read it as a ",
+            "phylogenetic result.")
+    gl[, phyloglm_replicates_discarded := n_bad]
+    return(gl)
+  }
 
   pl <- pool(fits)
   pl[, `:=`(model = "phyloglm", response = label, domain = domain,
             n_tips = ntip, n_positive = sum(y), alpha = mean(alphas),
-            n_genomes = sum(d$n_genomes))]
+            n_genomes = sum(d$n_genomes),
+            phyloglm_replicates_discarded = n_bad)]
+  if (n_bad) {
+    message(sprintf("  %s/%s: %d of %d replicates discarded (non-convergent or "
+                    , domain, label, n_bad, n_bad + length(fits)),
+            "alpha at the btol boundary).")
+  }
   message(sprintf("  %s/%s: %d species (%d positive, %d genomes), %d replicate(s), alpha=%.4g",
                   domain, label, ntip, sum(y), sum(d$n_genomes), length(fits), mean(alphas)))
   rbindlist(list(pl, gl), use.names = TRUE, fill = TRUE)
@@ -249,10 +338,37 @@ for (dom in c("Bacteria", "Archaea")) {
       allcov <- intersect(unique(c(COV, "log10_n_genomes")), names(dt))
       keep <- allcov[sapply(allcov, function(c) length(unique(dt[[c]])) > 1)]
       f <- as.formula(paste("has_c71 ~ taxon +", paste(keep, collapse = " + ")))
-      m <- glm(f, data = dt, family = binomial())
+
+      # has_c71 is rare and `taxon` is a many-level factor, so any taxon with
+      # zero (or all) positives is perfectly separated. Plain glm then returns a
+      # divergent coefficient with a huge SE, no error, and plogis() turns it
+      # into an adjusted prevalence pinned at 0 or 1 with a [0,1] interval that
+      # looks like a result. Penalise the likelihood (Firth) when we can, and
+      # name the separated taxa either way.
+      sep <- dt[, .(n = .N, pos = sum(has_c71)), by = taxon][pos == 0 | pos == n]
+      if (nrow(sep)) {
+        message(sprintf("  %s: %d of %d taxa are perfectly separated (all or no ",
+                        dom, nrow(sep), uniqueN(dt$taxon)),
+                "species positive). Their unpenalised coefficients diverge.")
+      }
+      use_firth <- requireNamespace("brglm2", quietly = TRUE)
+      m <- if (use_firth) {
+        glm(f, data = dt, family = binomial(), method = brglm2::brglmFit,
+            type = "AS_mean")
+      } else {
+        message("  brglm2 is not installed: falling back to unpenalised glm. ",
+                "Separated taxa will have unusable estimates and are flagged.")
+        glm(f, data = dt, family = binomial())
+      }
+
       nd <- unique(dt[, .(taxon)])
       # Predict at a reference genome: complete, uncontaminated, median assembly
       # quality, and the median amount of sequencing effort.
+      #
+      # Note the covariate point is not self-consistent: a genuinely complete
+      # genome does not have median contiguity, and those covariates are
+      # collinear with completeness. Read the adjusted prevalence as "holding
+      # assembly quality at its median", not as "a perfect genome".
       for (c in keep) nd[[c]] <- if (c %in% names(P$reference)) P$reference[[c]]
                                  else median(dt[[c]], na.rm = TRUE)
       pr <- predict(m, newdata = as.data.frame(nd), type = "link", se.fit = TRUE)
@@ -262,7 +378,9 @@ for (dom in c("Bacteria", "Archaea")) {
       nd[, `:=`(adjusted_prevalence = plogis(pr$fit),
                 lo = plogis(pr$fit - 1.96 * pr$se.fit),
                 hi = plogis(pr$fit + 1.96 * pr$se.fit),
-                domain = dom)]
+                domain = dom,
+                penalised = use_firth,
+                separated = taxon %in% sep$taxon)]
       prevs[[length(prevs) + 1]] <- merge(nd, raw, by = "taxon")
     }
   }

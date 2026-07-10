@@ -72,6 +72,8 @@ def main() -> None:
     ap.add_argument("--idmap")
     ap.add_argument("--out-faa", required=True)
     ap.add_argument("--out-idmap")
+    ap.add_argument("--out-evidence",
+                    help="tier of every sequence written to the output FASTA")
     ap.add_argument("--threads", type=int, default=4)
     a = ap.parse_args()
 
@@ -99,6 +101,32 @@ def main() -> None:
         idmap = idmap[idmap["seq_id"].isin(keep)]
         if len(idmap) != len(keep):
             sys.exit(f"[extract] {len(keep) - len(idmap)} kept IDs absent from idmap")
+
+        # c71.faa is the UNION of two evidence tiers. Nothing downstream of the
+        # triad filter distinguishes a sequence that cleared PF12386's curated
+        # gathering threshold from one that cleared only the SSF54001 fold model
+        # and then happened to carry C/H/D at the right columns. Write the tier
+        # out beside the FASTA so the fact is visible, and say the numbers.
+        if "evidence" in idmap.columns:
+            comp = idmap["evidence"].value_counts()
+            n_ssf = int(comp.get("ssf_only", 0))
+            frac = n_ssf / max(len(idmap), 1)
+            print("[extract] c71.faa composition: "
+                  + ", ".join(f"{k}={v:,}" for k, v in comp.items()), file=sys.stderr)
+            if n_ssf:
+                print(f"[extract] {frac:.1%} of c71.faa cleared only the SSF54001 "
+                      f"fold model. Their triad is real; their family is not "
+                      f"established, because SCOP 54001 spans ~22 families. NO "
+                      f"downstream analysis conditions on this. Read the "
+                      f"`evidence:ssf_only` row of convergence.tsv: if those tips "
+                      f"form a clade, c71.faa contains two families.",
+                      file=sys.stderr)
+            if a.out_evidence:
+                os.makedirs(os.path.dirname(os.path.abspath(a.out_evidence)),
+                            exist_ok=True)
+                cols = [c for c in ("seq_id", "sample", "protein_id", "evidence",
+                                    "profiles_hit") if c in idmap.columns]
+                idmap[cols].to_csv(a.out_evidence, sep="\t", index=False)
 
         by_faa = defaultdict(dict)
         for faa, pid, sid, smp in zip(idmap["faa"], idmap["protein_id"],

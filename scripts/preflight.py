@@ -366,6 +366,9 @@ def check_tree(path, label, ids, species, mode, min_frac, reps, meta_accessions=
 
 def check_hmms(cfg):
     for label, d in cfg["profiles"].items():
+        if not d.get("enabled", True):
+            warn(f"HMM {label} declared but disabled", "not searched; PeiR-type C39 proteins will not be screened")
+            continue
         p = d["path"]
         if not check_readable(p, f"HMM {label}"):
             continue
@@ -416,6 +419,8 @@ def check_hmms(cfg):
 
     names = []
     for label, d in cfg["profiles"].items():
+        if not d.get("enabled", True):
+            continue
         if os.path.exists(d["path"]):
             for line in open(d["path"], errors="replace"):
                 if line.startswith("NAME"):
@@ -455,6 +460,131 @@ def check_outputs(cfg, min_free_gib=100):
         # all-domains table are not. Budget generously.
         (ok if free > min_free_gib else warn)(
             f"free space on {d}", f"{free:.0f} GiB (want > {min_free_gib})")
+
+
+def check_specificity(cfg):
+    """The specificity block needs four external things this cluster cannot
+    download. Each one is checked, not assumed."""
+    s = cfg.get("specificity")
+    if not s or not s.get("enabled"):
+        warn("specificity block disabled", "no target-specificity analyses will run")
+        return
+
+    # --- Pfam ---------------------------------------------------------------
+    pfam = s["pfam_hmm"]
+    if check_readable(pfam, "Pfam-A.hmm"):
+        missing = [e for e in (".h3f", ".h3i", ".h3m", ".h3p")
+                   if not os.path.exists(pfam + e)]
+        if missing:
+            err("Pfam-A.hmm is not pressed", f"missing {missing}. Run: hmmpress {pfam}")
+        else:
+            ok("Pfam-A.hmm is pressed")
+        wanted = {str(s["pmbr_accession"]), str(s["catalytic_accession"])} | \
+                 {str(x) for x in s["accessory_binding_domains"]}
+        found = set()
+        with open(pfam, errors="replace") as fh:
+            for line in fh:
+                if line.startswith("ACC "):
+                    a = line[4:].strip().split(".")[0]
+                    if a in {w.split(".")[0] for w in wanted}:
+                        found.add(a)
+        miss = {w.split(".")[0] for w in wanted} - found
+        (ok if not miss else err)(
+            "Pfam accessions present",
+            f"{len(found)}/{len(wanted)} found"
+            + (f"; MISSING {sorted(miss)} -- wrong Pfam release?" if miss else ""))
+
+    # --- structure ----------------------------------------------------------
+    st = s["structure"]
+    if check_readable(st, "PeiP structure"):
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from groove_map import parse_structure
+            res = parse_structure(st, s["structure_chain"])
+            seeds = [int(x) + int(s.get("structure_offset", 0))
+                     for x in s["groove_seed_residues"]]
+            miss = [x for x in seeds if x not in res]
+            if miss:
+                err(f"structure chain {s['structure_chain']}: seed residues absent",
+                    f"{miss} not in {min(res)}..{max(res)}. Check "
+                    f"specificity.structure_offset and that the numbering is auth.")
+            else:
+                from groove_map import THREE_TO_ONE
+                names_ = "".join(THREE_TO_ONE[res[x]["name"]] for x in seeds)
+                ok(f"structure chain {s['structure_chain']}",
+                   f"{len(res)} residues; seeds resolve to {names_} at {seeds}")
+        except SystemExit as e:
+            err("structure unusable", str(e))
+        except Exception as e:  # noqa: BLE001
+            err("structure could not be parsed", f"{type(e).__name__}: {e}")
+
+    # --- Pmur HMMs ----------------------------------------------------------
+    d = s["pmur_hmm_dir"]
+    hmms = sorted(glob.glob(os.path.join(d, "*.hmm"))) if os.path.isdir(d) else []
+    if not hmms:
+        err("no Pmur marker HMMs", f"{d} has no *.hmm; cell-wall genotyping "
+                                   f"cannot run and the P1 hypothesis is untestable")
+    else:
+        n_ga = 0
+        for h in hmms:
+            with open(h, errors="replace") as fh:
+                for line in fh:
+                    if line.startswith("HMM "):
+                        break
+                    if line.startswith("GA "):
+                        n_ga += 1
+                        break
+        ok("Pmur marker HMMs", f"{len(hmms)} models, {n_ga} carry a GA line "
+                               f"(the rest use pmur_score_threshold="
+                               f"{s['pmur_score_threshold']})")
+        if len(hmms) < int(s["pmur_min_markers"]):
+            err("too few Pmur markers",
+                f"{len(hmms)} models but pmur_min_markers={s['pmur_min_markers']}; "
+                f"no genome could ever be called pseudomurein-positive")
+
+    # --- selection ----------------------------------------------------------
+    sel = s.get("selection", {})
+    if sel.get("enabled"):
+        if not shutil.which("hyphy"):
+            warn("hyphy not on PATH", "fine if the `selection` conda env will be built")
+        ok("selection enabled",
+           f"methods {sel['hyphy_methods']}, max {sel['max_seqs']} tips")
+
+    # --- geNomad ------------------------------------------------------------
+    if s.get("genomad_enabled"):
+        db = s.get("genomad_db")
+        if db and os.path.isdir(db):
+            ok("geNomad database", db)
+        else:
+            warn("geNomad database not found", f"{db}; prophage context skipped")
+
+    # --- wall-chemistry reference -------------------------------------------
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from cellwall_reference import (CITATION, DISPUTED, GENUS_CHEMISTRIES,
+                                        genus_is_homogeneous)
+        het = [g for g in GENUS_CHEMISTRIES if not genus_is_homogeneous(g)]
+        ok("wall-chemistry reference", f"{CITATION}; "
+           f"{len(GENUS_CHEMISTRIES)} characterised genera, "
+           f"{len(het)} heterogeneous ({het})")
+        if DISPUTED:
+            warn("wall-chemistry claims this pipeline will not act on",
+                 f"{sorted(DISPUTED)}. They are called 'unsupported', not guessed. "
+                 f"Add a primary citation to cellwall_reference.REFERENCE to use them.")
+    except Exception as e:  # noqa: BLE001
+        err("cellwall_reference unusable", f"{type(e).__name__}: {e}")
+
+    # --- the circularity guard ----------------------------------------------
+    parts = s["sdp_partitions"]
+    if "active_site_subgroup" in parts:
+        err("SDP partition list contains the active-site subgroups",
+            "those are k-means on the very columns an SDP test examines. "
+            "The result would be circular by construction.")
+    if int(s["sdp_min_partitions"]) < 2:
+        warn("sdp_min_partitions < 2",
+             "single-partition SDPs are partition artefacts; 2 is the minimum "
+             "that means anything")
+    ok("SDP partitions", f"{parts}, replication >= {s['sdp_min_partitions']}")
 
 
 def check_tools():
@@ -592,6 +722,9 @@ def main() -> None:
 
     print("\n--- output directories ---")
     check_outputs(cfg)
+
+    print("\n--- specificity block ---")
+    check_specificity(cfg)
 
     print("\n--- tools ---")
     check_tools()

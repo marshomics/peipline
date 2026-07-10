@@ -40,9 +40,36 @@ def count_faa(path: str) -> int:
 
 
 def run_prodigal(fna, faa, ffn, mode, table):
-    cmd = ["prodigal", "-i", fna, "-a", faa, "-d", ffn,
+    """Write to .tmp, rename on success, then drop a .done marker.
+
+    Prodigal used to write straight to the final path. The per-genome .faa/.ffn
+    are not Snakemake outputs, so a job killed by walltime or OOM left a
+    truncated .faa behind; on the rerun the cache check saw a non-empty file,
+    called it "cached", and a partial proteome went into hmmsearch. One killed
+    chunk out of ~220 would be invisible in a 10-genome test and silent in
+    production.
+
+    os.replace is atomic within a filesystem, so anything at the final path is
+    complete. `.done` is written last, so a half-renamed pair is detectable too.
+    """
+    tmp_faa, tmp_ffn, done = faa + ".tmp", ffn + ".tmp", faa + ".done"
+    for p in (tmp_faa, tmp_ffn, done):
+        if os.path.exists(p):
+            os.remove(p)
+    cmd = ["prodigal", "-i", fna, "-a", tmp_faa, "-d", tmp_ffn,
            "-p", mode, "-g", str(table), "-m", "-q", "-o", "/dev/null"]
-    return subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode == 0 and os.path.exists(tmp_faa) and os.path.getsize(tmp_faa) > 0:
+        os.replace(tmp_faa, faa)
+        if os.path.exists(tmp_ffn):
+            os.replace(tmp_ffn, ffn)
+        with open(done, "w") as fh:
+            fh.write("ok\n")
+    else:
+        for p in (tmp_faa, tmp_ffn):
+            if os.path.exists(p):
+                os.remove(p)
+    return r
 
 
 def main() -> None:
@@ -67,7 +94,14 @@ def main() -> None:
         faa = os.path.join(a.outdir, f"{stem}.faa")
         ffn = os.path.join(a.outdir, f"{stem}.ffn")
 
-        if os.path.exists(faa) and os.path.getsize(faa) > 0:
+        # The per-genome .faa/.ffn are not Snakemake outputs, so a job killed by
+        # walltime or OOM leaves a TRUNCATED .faa behind. `size > 0` then accepts
+        # it as "cached" on the rerun and a partial proteome enters hmmsearch.
+        # run_prodigal() now writes to .tmp and os.replace()s on success, so any
+        # file at the final path is complete by construction. A stale truncated
+        # file from an older run is still possible: `.done` is the marker.
+        if os.path.exists(faa) and os.path.getsize(faa) > 0 and \
+                os.path.exists(faa + ".done"):
             rows.append((stem, fna, faa, "cached", count_faa(faa), genome_size(fna)))
             continue
 

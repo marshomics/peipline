@@ -105,21 +105,34 @@ def fig_evidence_tiers(tiers_path, figdir, fmts, dpi):
     cols = palette(len(t))
 
     ax = axes[0]
-    ax.bar(x - 0.2, t["n_aligned"], width=0.35, color="0.75", label="aligned")
-    ax.bar(x + 0.2, t["n_triad_positive"], width=0.35, color=PALETTE[0],
+    ax.bar(x - 0.25, t["n_aligned"], width=0.25, color="0.75", label="aligned")
+    if "n_testable" in t.columns:
+        # `aligned` is not `testable`. Sequences gapped at the triad columns or
+        # below the coverage floor were never tested, and plotting them inside the
+        # denominator is how an alignment failure becomes a pass rate.
+        ax.bar(x, t["n_testable"], width=0.25, color="0.45", label="testable")
+    ax.bar(x + 0.25, t["n_triad_positive"], width=0.25, color=PALETTE[0],
            label="full triad")
     ax.set_xticks(x); ax.set_xticklabels(t["evidence"])
     ax.set_yscale("log"); ax.set_ylabel("Sequences")
-    ax.legend()
+    ax.legend(fontsize=6)
     ax.set_title("A  Triad filter by evidence tier", loc="left")
 
     ax = axes[1]
-    ax.bar(x, 100 * t["frac_triad_positive"], color=cols, width=0.55)
-    for i, v in enumerate(100 * t["frac_triad_positive"]):
+    rate_col = ("frac_triad_positive_of_testable"
+                if "frac_triad_positive_of_testable" in t.columns
+                else "frac_triad_positive")
+    ax.bar(x, 100 * t[rate_col], color=cols, width=0.55)
+    for i, v in enumerate(100 * t[rate_col]):
         ax.text(i, v, f"{v:.1f}%", ha="center", va="bottom", fontsize=6)
+    if "frac_testable" in t.columns:
+        for i, ft in enumerate(t["frac_testable"]):
+            if ft < 0.999:
+                ax.text(i, 2, f"only {100 * ft:.0f}%\ntestable", ha="center",
+                        va="bottom", fontsize=5, color=PALETTE[3])
     ax.set_xticks(x); ax.set_xticklabels(t["evidence"])
-    ax.set_ylabel("% carrying the full triad")
-    ax.set_title("B  Pass rate", loc="left")
+    ax.set_ylabel("% of TESTABLE carrying the full triad")
+    ax.set_title("B  Pass rate, over testable sequences only", loc="left")
 
     fig.tight_layout()
     savefig(fig, figdir, "21_evidence_tiers", fmts, dpi)

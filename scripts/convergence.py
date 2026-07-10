@@ -134,9 +134,34 @@ def main() -> None:
     B = int(vcfg["n_permutations"])
     S = int(vcfg["n_brownian"])
 
+    # `c71.faa` is the UNION of two evidence tiers: sequences that cleared
+    # PF12386's curated gathering threshold, and sequences that cleared only the
+    # SSF54001 fold model and then passed the triad filter. Nothing downstream of
+    # the filter distinguishes them, so test the tier itself as a trait on the
+    # gene tree.
+    #
+    #   D near 0  ssf_only tips are CLUMPED. They form their own lineage, which is
+    #             what a different family looks like. Pooling them into c71.faa is
+    #             then a decision that needs defending, not a default.
+    #   D near 1  ssf_only tips are interspersed among the PF12386 hits, so the
+    #             gathering threshold is simply conservative and the sensitivity
+    #             tier is doing the job it was added for.
+    #
+    # This is the cheapest test that separates "PF12386 is strict" from "SSF54001
+    # let something else in", and it costs one extra trait.
+    traits = [(str(k), {t.name: int(sub[t.name] == k) for t in tips})
+              for k in sorted(assign["subgroup"].unique())]
+    if "evidence" in assign.columns and assign["evidence"].nunique() > 1:
+        ev = dict(zip(assign["seq_id"], assign["evidence"]))
+        state_ev = {t.name: int(ev.get(t.name) == "ssf_only") for t in tips}
+        traits.append(("evidence:ssf_only", state_ev))
+        print(f"[convergence] {sum(state_ev.values())}/{n} tree tips are ssf_only. "
+              f"Testing whether they are a clade (a different family) or "
+              f"interspersed (PF12386's threshold is just conservative).",
+              file=sys.stderr)
+
     rows = []
-    for k in sorted(assign["subgroup"].unique()):
-        state = {t.name: int(sub[t.name] == k) for t in tips}
+    for k, state in traits:
         obs = min_origins(post, state)
         prev = sum(state.values()) / n
         if prev in (0.0, 1.0):
@@ -170,6 +195,14 @@ def main() -> None:
         else:
             D, interp = np.nan, "D undefined: Brownian and random nulls coincide"
 
+        if k == "evidence:ssf_only" and np.isfinite(D):
+            interp += ("  <- ssf_only forms its own lineage: these are probably NOT "
+                       "the same family as the PF12386 hits, and c71.faa pools them"
+                       if D < 0.25 else
+                       "  <- ssf_only is interspersed among the PF12386 hits: the "
+                       "gathering threshold is conservative, not the fold model "
+                       "permissive")
+
         rows.append({
             "subgroup": k, "n_tips": int(labels.sum()), "prevalence": prev,
             "observed_origins": obs,
@@ -179,10 +212,20 @@ def main() -> None:
             "fritz_purvis_D": D,
             "interpretation": interp,
         })
-        print(f"[convergence] SG{k}: {obs} origins, random null {mean_r:.1f}, "
+        print(f"[convergence] {k}: {obs} origins, random null {mean_r:.1f}, "
               f"Brownian null {mean_b:.1f}, D = {D:.3f}, p = {p:.4f}", file=sys.stderr)
 
     df = pd.DataFrame(rows)
+    # k subgroup traits (+ the evidence trait) are reported side by side and a
+    # reader will scan the column for "which is significantly clustered". That is
+    # a family of tests, so correct it. The raw p stays visible.
+    if len(df):
+        from statsmodels.stats.multitest import multipletests
+        df["q_clustered"] = multipletests(df["p_clustered"], method="fdr_bh")[1]
+        df["significant"] = df["q_clustered"] < 0.05
+        n_sig = int(df["significant"].sum())
+        print(f"[convergence] {n_sig}/{len(df)} traits clustered at q < 0.05 "
+              f"(BH across the {len(df)} traits, not per-trait p)", file=sys.stderr)
     df.to_csv(a.out, sep="\t", index=False)
     if df.empty:
         print("[convergence] nothing to test", file=sys.stderr)

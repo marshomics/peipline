@@ -37,7 +37,11 @@ DO_DECOY="${8:-1}"
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVS_ROOT="${ENVS_ROOT:-}"
-ALLOW_MISSING="${ALLOW_MISSING:---allow-missing}"
+# `${VAR:-def}` substitutes when VAR is unset OR EMPTY. The Snakefile always
+# sets ALLOW_MISSING, passing "" when allow_missing_faa is false -- so the
+# default was applied anyway and the safety toggle never did anything.
+# `${VAR-def}` substitutes only when UNSET, which is what was meant.
+ALLOW_MISSING="${ALLOW_MISSING---allow-missing}"
 
 act() {   # activate a pre-built env, or do nothing when snakemake manages conda
     [ -n "$ENVS_ROOT" ] || return 0
@@ -71,6 +75,8 @@ df -h "$SCRATCH" 2>/dev/null | tail -1 >&2 || true
 import sys, yaml
 cfg = yaml.safe_load(open(sys.argv[1]))
 for name, d in sorted(cfg["profiles"].items()):
+    if not d.get("enabled", True):
+        continue    # declared, not searched. See config.yaml and rule pei_check.
     t = str(d["threshold"])
     flags = f"--{t}" if t.startswith("cut_") else f"-T {t} --domT {t} --incT {t} --incdomT {t}"
     print(f"{name}\t{flags}")

@@ -188,20 +188,42 @@ def gap_statistic(Z, kmin, kmax, seed, B=20, max_rows=3000):
     return kmax, gap
 
 
+def l2_normalise(Z):
+    """Project onto the unit sphere, so Euclidean k-means IS cosine k-means.
+
+    The old code clustered with Euclidean k-means and then judged the result with
+    a cosine silhouette, on the stated grounds that Euclidean distance here is
+    dominated by vector magnitude. If that reasoning is right -- and it is -- then
+    the *assignments* carried the same magnitude artefact, and the cosine
+    silhouette only chose how many magnitude-contaminated clusters to report.
+    Selection geometry and clustering geometry have to be the same geometry.
+    """
+    nrm = np.linalg.norm(Z, axis=1, keepdims=True)
+    return Z / np.maximum(nrm, 1e-12)
+
+
 def choose_k(Z, kmin, kmax, seed, criterion="silhouette_cosine", sil_sample=5000,
              sample_weight=None):
     """Sweep k and score each solution four ways.
 
-    The primary criterion is the *cosine* silhouette. On a BLOSUM-embedded
-    barcode the informative signal is the direction of the residue vector, not
-    its magnitude; Euclidean silhouette systematically prefers k=2 because it
-    is dominated by vector length, which tracks how many non-gap positions a
-    sequence has rather than which subgroup it belongs to. The other three
-    metrics are reported so a disagreement is visible rather than hidden.
+    Z is expected L2-normalised, so k-means on it is spherical k-means and the
+    cosine silhouette scores the geometry the clusters were actually built in.
+
+    The silhouette subsample is drawn with probability proportional to the
+    redundancy weight. Drawing it uniformly meant k was chosen on whatever had
+    been sequenced most, which is precisely what w_i = 1/|90% cluster| exists to
+    prevent, and the rest of the pipeline advertises that correction.
     """
     rng = np.random.default_rng(seed)
-    sub = (rng.choice(len(Z), sil_sample, replace=False)
-           if len(Z) > sil_sample else np.arange(len(Z)))
+    if len(Z) > sil_sample:
+        if sample_weight is not None:
+            p = np.asarray(sample_weight, dtype=float)
+            p = p / p.sum()
+            sub = rng.choice(len(Z), sil_sample, replace=False, p=p)
+        else:
+            sub = rng.choice(len(Z), sil_sample, replace=False)
+    else:
+        sub = np.arange(len(Z))
     rows, labels = [], {}
     for k in range(kmin, min(kmax, len(Z) - 1) + 1):
         km = KMeans(n_clusters=k, n_init=10, random_state=seed).fit(
@@ -542,8 +564,36 @@ def main() -> None:
 
     rng = np.random.default_rng(seed)
     n = len(barcodes)
-    fit_idx = (rng.choice(n, acfg["max_cluster_seqs"], replace=False)
-               if n > acfg["max_cluster_seqs"] else np.arange(n))
+
+    # The PCA basis is the space subgroups are DISCOVERED in, so it must not be
+    # driven by over-sequencing. The old code fit it on a uniform subsample of all
+    # sequences, with no redundancy weights anywhere: a single over-sequenced
+    # genus could define a principal axis and therefore a "subgroup". The
+    # redundancy correction the rest of the pipeline advertises was silently
+    # absent from the one step where it mattered most.
+    #
+    # Fit on cluster representatives instead. Dereplication and weighting are the
+    # same correction; dereplication also fixes the null geometry, which weights
+    # cannot.
+    cl = seq_cluster.to_numpy()
+    if pd.notna(cl).all():
+        _seen, rep_idx = set(), []
+        for i, c in enumerate(cl):
+            if c not in _seen:
+                _seen.add(c)
+                rep_idx.append(i)
+        rep_idx = np.asarray(rep_idx)
+        print(f"[active_site] PCA basis from {len(rep_idx):,} cluster "
+              f"representatives, not {n:,} sequences", file=sys.stderr)
+    else:
+        rep_idx = np.arange(n)
+        print("[active_site] no cluster column: the PCA basis is unweighted and a "
+              "single over-sequenced lineage can define a component",
+              file=sys.stderr)
+
+    if len(rep_idx) > acfg["max_cluster_seqs"]:
+        rep_idx = rng.choice(rep_idx, acfg["max_cluster_seqs"], replace=False)
+    fit_idx = rep_idx
 
     X_fit = encode([barcodes[i] for i in fit_idx], M, weights)
     cap = int(min(acfg["pca_components"], X_fit.shape[0] - 1, X_fit.shape[1]))
@@ -557,9 +607,12 @@ def main() -> None:
     else:
         ncomp = cap
     pca = PCA(n_components=ncomp, random_state=seed).fit(X_fit)
-    Z_fit = pca.transform(X_fit)
+    # Spherical: k-means, KMeans.predict and the cosine silhouette now all live in
+    # the same geometry. See l2_normalise().
+    Z_fit = l2_normalise(pca.transform(X_fit))
     print(f"[active_site] PCA ({sel}): {ncomp} components, "
-          f"{100 * pca.explained_variance_ratio_.sum():.1f}% variance", file=sys.stderr)
+          f"{100 * pca.explained_variance_ratio_.sum():.1f}% variance; "
+          f"scores L2-normalised (spherical k-means)", file=sys.stderr)
 
     w_fit = seq_w[fit_idx]
     k_best, metrics, _, k_gap = choose_k(Z_fit, acfg["k_min"], acfg["k_max"], seed,
@@ -572,12 +625,13 @@ def main() -> None:
     hdb_k = None if hdb is None else len(set(hdb) - {-1})
 
     # Assign every sequence. Sequences held out of the PCA/k-means fit are
-    # projected into the same basis and given their nearest centroid, which is
-    # exactly what KMeans.predict does.
+    # projected into the same basis, normalised the same way, and given their
+    # nearest centroid.
     Z_all = np.empty((n, ncomp), dtype=np.float32)
     step = 20000
     for s in range(0, n, step):
-        Z_all[s:s + step] = pca.transform(encode(barcodes[s:s + step], M, weights))
+        Z_all[s:s + step] = l2_normalise(
+            pca.transform(encode(barcodes[s:s + step], M, weights)))
     labels = km.predict(Z_all)
 
     metrics.to_csv(os.path.join(a.tabdir, "subgroup_model_selection.tsv"),

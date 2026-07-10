@@ -18,7 +18,7 @@ import sys
 import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENVS = ["hmmer", "py", "phylo", "network", "prodigal", "r"]
+ENVS = ["hmmer", "py", "phylo", "network", "prodigal", "r", "selection"]
 BANNED_CHANNELS = {"defaults", "anaconda", "main", "r", "free", "pro", "msys2"}
 
 problems: list[str] = []
@@ -145,9 +145,11 @@ def main():
     check_sge_profile(prof, text)
 
     # --- per-rule checks ----------------------------------------------------
-    env_vars = {"ENV_HMMER", "ENV_PY", "ENV_PHYLO", "ENV_NET", "ENV_PROD", "ENV_R"}
+    env_vars = {"ENV_HMMER", "ENV_PY", "ENV_PHYLO", "ENV_NET", "ENV_PROD", "ENV_R",
+                "ENV_SEL"}
     conda_to_var = {"hmmer": "ENV_HMMER", "py": "ENV_PY", "phylo": "ENV_PHYLO",
-                    "network": "ENV_NET", "prodigal": "ENV_PROD", "r": "ENV_R"}
+                    "network": "ENV_NET", "prodigal": "ENV_PROD", "r": "ENV_R",
+                    "selection": "ENV_SEL"}
     n_rules = n_shell = 0
 
     for name, body in parse_rules(text):

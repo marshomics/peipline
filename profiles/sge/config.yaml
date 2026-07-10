@@ -74,6 +74,10 @@ set-threads:
   active_site: 8
   ssn_align: 32
   phyloglm: 1          # phylolm is single-threaded; extra slots just idle
+  domain_arch: 8
+  module_trees: 16
+  cellwall_genotype: 16
+  selection: 16
 
 set-resources:
   # ---- short, high-count: standard.q -------------------------------------
@@ -133,6 +137,24 @@ set-resources:
     mem_mb: 8000
     h_rt: "01:00:00"
 
+  # ---- specificity block --------------------------------------------------
+  # hmmscan against the whole of Pfam-A, on a few thousand proteins.
+  domain_arch:
+    mem_mb: 32000
+    h_rt: "12:00:00"
+  groove_map:
+    mem_mb: 8000
+    h_rt: "01:00:00"
+  pei_class:
+    mem_mb: 16000
+    h_rt: "02:00:00"
+  sdp:
+    mem_mb: 32000
+    h_rt: "12:00:00"
+  assay_panel:
+    mem_mb: 8000
+    h_rt: "01:00:00"
+
   # ---- long: long.q (standard.q caps at 24h) ------------------------------
   # hmmalign is single-threaded and streams every hit sequence through the
   # profile. At 10^5-10^6 hits this runs for many hours.
@@ -154,4 +176,19 @@ set-resources:
   phyloglm:
     mem_mb: 96000
     h_rt: "48:00:00"
+    queue: "long.q"
+  # Two MAFFT alignments plus two IQ-TREE runs.
+  module_trees:
+    mem_mb: 64000
+    h_rt: "48:00:00"
+    queue: "long.q"
+  # One hmmsearch per Pmur marker across every archaeal proteome.
+  cellwall_genotype:
+    mem_mb: 32000
+    h_rt: "48:00:00"
+    queue: "long.q"
+  # HyPhy FEL/MEME are the slowest thing in the pipeline after IQ-TREE.
+  selection:
+    mem_mb: 64000
+    h_rt: "120:00:00"
     queue: "long.q"
