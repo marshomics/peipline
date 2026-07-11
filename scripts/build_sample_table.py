@@ -82,8 +82,15 @@ def newick_tip_labels(path: str) -> set:
 
 
 def gtdb_variants(acc: str):
-    """GTDB accessions appear as GB_GCA_000008665.1, RS_GCF_..., or bare
-    GCA_000008665.1 depending on which file you are reading."""
+    """Every form a genome accession takes across GTDB and NCBI files, so a join
+    succeeds whichever side uses which.
+
+    GTDB writes GB_GCA_000008665.1, RS_GCF_..., or bare GCA_000008665.1. An NCBI
+    assembly FILENAME stem additionally carries the assembly name and a `_genomic`
+    suffix -- GCA_000006805.1_ASM680v1_genomic -- and the Prodigal stems are those
+    filenames. The bare accession (GCA_000006805.1) is recovered from the front of
+    the stem, and its GB_/RS_/versionless variants are added too. A non-accession
+    id (a provided proteome name like FREE007368) is returned unchanged."""
     acc = str(acc).strip()
     out = {acc}
     m = re.match(r"^(GB|RS)_(.*)$", acc)
@@ -93,6 +100,22 @@ def gtdb_variants(acc: str):
         out.add("GB_" + acc)
         out.add("RS_" + acc)
     out.add(re.sub(r"\.\d+$", "", acc))
+    # Recover the bare GTDB accession from an NCBI assembly stem and add ITS
+    # variants: GCA_000006805.1_ASM680v1_genomic -> the accession core plus every
+    # form GTDB might use. Anchored at the start so it never fires on a
+    # non-accession id (a provided proteome name like FREE007368).
+    #
+    # GenBank <-> RefSeq cross-map. GTDB indexes each genome under ONE accession --
+    # GenBank (GB_GCA_...) for some, RefSeq (RS_GCF_...) for others -- while an NCBI
+    # download is named by whichever database you fetched from. GCA and GCF share
+    # the assembly NUMBER, so both are generated here (prefixed and versionless);
+    # otherwise a GCA-named genome that GTDB holds as RS_GCF_... never matches.
+    core = re.match(r"^(?:GB_|RS_)?GC[AF]_(\d+)\.(\d+)", acc)
+    if core:
+        num, ver = core.group(1), core.group(2)
+        for db in ("GCA", "GCF"):
+            base = f"{db}_{num}.{ver}"
+            out.update({base, "GB_" + base, "RS_" + base, f"{db}_{num}"})
     return out
 
 
@@ -291,6 +314,19 @@ def main() -> None:
         bac["domain"] = bac["domain"].fillna("Bacteria")
     print("[sample_table] provided proteomes by domain: "
           f"{bac['domain'].value_counts().to_dict()}", file=sys.stderr)
+
+    # Provided-proteome archaea are dropped by default: the archaeal proteomes are
+    # built from the Prodigal .fna set, so an archaeon appearing in the provided
+    # (bacterial) sample table duplicates one already in that set and would be
+    # double-counted. Set inputs.drop_provided_archaea: false to keep them (they
+    # would then be routed to the archaeal tree).
+    if IN.get("drop_provided_archaea", True):
+        n_ap = int((bac["domain"] == "Archaea").sum())
+        if n_ap:
+            print(f"[sample_table] dropping {n_ap} provided-proteome archaea "
+                  f"(the archaeal set comes from Prodigal; "
+                  f"inputs.drop_provided_archaea=true)", file=sys.stderr)
+            bac = bac[bac["domain"] != "Archaea"].copy()
 
     # ---- Prodigal archaea ---------------------------------------------------
     man = [pd.read_csv(m, sep="\t", dtype=str) for m in a.manifests]

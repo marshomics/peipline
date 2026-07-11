@@ -334,8 +334,17 @@ def main() -> None:
           "archaeal genomes did not match ar53 tree tips")
     check(gt.loc[gt["domain"] == "Bacteria", "tree_tip"].notna().all(),
           "bacterial genomes did not match tree tips")
-    check((gt["domain"] == "Archaea").sum() > 20,
-          "the archaea hidden in the bacterial sample table were not detected")
+    # Provided-proteome archaea (planted in bacteria_qc.tsv with gtdb_domain
+    # d__Archaea) must be DROPPED under inputs.drop_provided_archaea (the default):
+    # the archaeal set comes from Prodigal, so a provided archaeon is a duplicate.
+    # Their absence also proves the domain classification that drives the drop ran.
+    bq = pd.read_csv(f"{base}/bacteria_qc.tsv", sep="\t", dtype=str)
+    stray = set(bq.loc[bq["gtdb_domain"] == "d__Archaea", "genome_id"])
+    check(len(stray) > 0, "test fixture planted no stray archaea to exercise the drop")
+    leaked = stray & set(gt["sample"].astype(str))
+    check(not leaked,
+          f"provided-proteome archaea were not dropped; leaked into the table: "
+          f"{sorted(leaked)[:5]}")
     check(not (gt["tree_tip"] == "s__").any(),
           "genomes were matched to the bare 's__' tip")
     ntip = gt.loc[gt["domain"] == "Bacteria", "tree_tip"].nunique()

@@ -44,6 +44,12 @@ inputs:
   archaea_metadata: /ebio/abt3_scratch/jmarsh/gtdb/ar53_metadata_r232.tsv
   archaea_metadata_key: accession
 
+  # The archaeal proteomes come from the Prodigal .fna set above. An archaeon that
+  # also appears in the provided (bacterial) sample_table is therefore a duplicate,
+  # so provided-proteome archaea are dropped rather than routed to the archaeal
+  # tree. Set false to keep them (they are then tip-matched to the archaeal tree).
+  drop_provided_archaea: true
+
 # GTDB reference trees for the phylogenetic regressions.
 # The archaeal tree and metadata are BOTH GTDB r232 and co-located, so their tip
 # labels come from the same release. The old ar53.tree matched only ~45% of
@@ -703,7 +709,7 @@ specificity:
     codon_alignment: pal2nal
 
   # ---- prophage context ----------------------------------------------------
-  genomad_db: /ebio/abt3_projects/databases/genomad/genomad_db
+  genomad_db: /ebio/abt3_scratch/jmarsh/archaea_plasmids/db/final_db/genomad/db/genomad_db
   genomad_enabled: true
 
   # ---- structure-based confirmation for divergent lineages ----------------

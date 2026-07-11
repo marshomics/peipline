@@ -766,9 +766,15 @@ def main() -> None:
                if dom_c else pd.Series("Bacteria", index=j.index))
         counts = dom.value_counts().to_dict()
         ok("provided proteomes by gtdb_domain", str(counts))
+        drop_arc = cfg["inputs"].get("drop_provided_archaea", True)
         if counts.get("Archaea", 0):
-            warn(f"{counts['Archaea']:,} archaea inside the 'bacterial' sample table",
-                 "they are routed to the archaeal tree, not the bacterial one")
+            if drop_arc:
+                ok(f"{counts['Archaea']:,} archaea inside the provided sample table",
+                   "dropped and NOT tip-matched: the archaeal set is built from "
+                   "Prodigal (inputs.drop_provided_archaea=true)")
+            else:
+                warn(f"{counts['Archaea']:,} archaea inside the 'bacterial' sample table",
+                     "they are routed to the archaeal tree, not the bacterial one")
         sel_b = (dom == "Bacteria")
         bac_ids = j.index[sel_b].tolist()
         bac_sp = (j[sp_c][sel_b].tolist() if sp_c else [None] * len(bac_ids))
@@ -789,8 +795,13 @@ def main() -> None:
     tm = cfg["tip_matching"]
     check_tree(cfg["trees"]["bacteria"], "bacteria", bac_ids, bac_sp,
                tm["bacteria"], float(tm["min_match_fraction"]), reps)
-    ar_ids = list(arc_ids or []) + list(stray)
-    ar_sp = list(arc_sp or []) + list(stray_sp)
+    # Provided-proteome archaea (`stray`) are dropped from the archaeal set when
+    # inputs.drop_provided_archaea is true (default): the archaea come from
+    # Prodigal, so a stray would be a duplicate. Only add them back if kept.
+    keep_stray = [] if cfg["inputs"].get("drop_provided_archaea", True) else list(stray)
+    keep_stray_sp = [] if cfg["inputs"].get("drop_provided_archaea", True) else list(stray_sp)
+    ar_ids = list(arc_ids or []) + keep_stray
+    ar_sp = list(arc_sp or []) + keep_stray_sp
     check_tree(cfg["trees"]["archaea"], "archaea", ar_ids, ar_sp,
                tm["archaea"], float(tm["min_match_fraction"]), reps, meta_acc)
 
