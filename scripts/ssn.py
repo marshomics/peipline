@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
 
 import numpy as np
@@ -224,6 +225,13 @@ def main() -> None:
             g.vs["evidence"] = clusters["evidence"].fillna("NA").astype(str).tolist()
         g.es["alignment_score"] = e["alignment_score"].tolist()
         g.write_graphml(a.out_graphml)
+        # Seed igraph's RNG so the force-directed layout (drl) is reproducible;
+        # otherwise the published SSN figure's node coordinates change run to run.
+        _seed = int((cfg.get("active_site") or {}).get("random_state", 12345))
+        try:
+            ig.set_random_number_generator(random.Random(_seed))
+        except Exception:  # noqa: BLE001
+            random.seed(_seed)
         coords = np.array(g.layout(scfg["layout"]).coords)
     except Exception as exc:  # noqa: BLE001
         print(f"[ssn] igraph unavailable or layout failed ({exc}); writing plain GraphML "

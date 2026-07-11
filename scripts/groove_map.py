@@ -23,7 +23,7 @@ this file. So it does three things and refuses to guess at any of them.
    cannot be compared across sequences and are dropped, with a count.
 
 It also looks for a divalent cation. PeiW and PeiP are dead after EDTA and are
-rescued by a metal -- PeiP only by Ca, PeiW also by Mn, Mg, Ba and Ni (Subedi et
+rescued by a metal -- PeiP only by Ca, PeiW also by Mn, Mg, Ba and Ni (Schofield et
 al. 2015). That difference is the sharpest thing distinguishing the two
 characterised enzymes, and the groove does not explain it. If a cation is in the
 coordinates its first and second shells are emitted as separate columns, so
@@ -249,7 +249,7 @@ def main() -> None:
 
     # --- divalent metal site -------------------------------------------------
     # Both enzymes are dead after EDTA and both are rescued by Ca, but only PeiW
-    # is rescued by Mn/Mg/Ba/Ni (Subedi et al. 2015). If the coordinates hold a
+    # is rescued by Mn/Mg/Ba/Ni (Schofield et al. 2015). If the coordinates hold a
     # cation, the residues around it are a second, independent hypothesis space
     # for specificity-determining positions -- one the groove analysis cannot see.
     #
@@ -265,7 +265,7 @@ def main() -> None:
         if not ions:
             print(f"[metal] no {'/'.join(mcfg.get('ions', []))} ion in "
                   f"{os.path.basename(path)}. PeiW and PeiP require a divalent "
-                  f"cation (<1% activity after EDTA; Subedi et al. 2015), and "
+                  f"cation (<1% activity after EDTA; Schofield et al. 2015), and "
                   f"PeiP is Ca-specific while PeiW is not. No deposited Pei "
                   f"structure resolves the site. No metal shell will be tested; "
                   f"the columns are emitted as 0 so downstream code is uniform.",
@@ -483,7 +483,7 @@ def main() -> None:
                 "shell_overlaps_groove": len(metal_shell & groove),
                 "note": ("PeiW and PeiP retain <1% activity after EDTA and are "
                          "rescued by a divalent cation; PeiP by Ca alone, PeiW "
-                         "also by Mn/Mg/Ba/Ni (Subedi et al. 2015, "
+                         "also by Mn/Mg/Ba/Ni (Schofield et al. 2015, "
                          "doi:10.1155/2015/828693). If ions_found is empty the "
                          "site is unresolved in this structure, not absent from "
                          "the enzyme."),

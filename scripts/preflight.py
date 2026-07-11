@@ -45,7 +45,8 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_sample_table import (QC_KEYS, TAX_CANDIDATES, autodetect_key,  # noqa: E402
                                 gtdb_variants, newick_tip_labels, resolve_tips)
-from utils import load_config, parse_gtdb_lineage  # noqa: E402
+from utils import load_config, parse_gtdb_lineage, read_fasta, seq_id  # noqa: E402
+import synteny  # noqa: E402
 
 ROWS: list[dict] = []
 COLOR = {"OK": "\033[32m", "WARN": "\033[33m", "ERROR": "\033[31m"}
@@ -178,6 +179,59 @@ def check_sample_table(cfg, n_sample):
             f"of {len(sub):,}\n         e.g. "
             + "\n         ".join(f"{k}: {v}" for k, v in examples.items() if k != "ok"))
     return df
+
+
+def check_gff_join(cfg, n_sample):
+    """Do the bacterial GFFs exist and do their feature IDs join to the .faa?
+
+    Synteny is corroboration for the out-of-order PM candidates, so a broken GFF
+    warns rather than aborts. But a GFF whose IDs do not match the proteome is
+    silently useless, so verify the join on a sample.
+    """
+    IN = cfg["inputs"]
+    gff_col = IN.get("gff_col")
+    if not gff_col:
+        ok("inputs.gff_col not set", "no bacterial synteny; out-of-order PM "
+           "candidates will be synteny_unknown (not an error)")
+        return
+    p = IN["sample_table"]
+    hdr = pd.read_csv(p, sep="\t", nrows=0)
+    if gff_col not in hdr.columns:
+        warn(f"inputs.gff_col='{gff_col}' absent from the sample table",
+             "bacterial synteny disabled")
+        return
+    df = pd.read_csv(p, sep="\t", usecols=[IN["faa_col"], gff_col], dtype=str).dropna()
+    if df.empty:
+        warn("no rows have both a faa and a gff", "bacterial synteny disabled")
+        return
+    take = min(n_sample, len(df))
+    picked = df.sample(take, random_state=0)
+    ok_join, bad, unreadable = 0, [], 0
+    for _, row in picked.iterrows():
+        faa, gff = row[IN["faa_col"]], row[gff_col]
+        if not (os.path.exists(faa) and os.path.exists(gff)):
+            unreadable += 1
+            continue
+        try:
+            pid = next(seq_id(h) for h, _ in read_fasta(faa))
+            coords = synteny.parse_gff(gff)
+        except (OSError, StopIteration, Exception) as e:  # noqa: BLE001
+            bad.append(f"{gff}: {type(e).__name__}")
+            continue
+        if pid in coords:
+            ok_join += 1
+        else:
+            bad.append(f"{gff}: .faa id {pid!r} not found among {len(coords)} GFF features")
+    if ok_join == take:
+        ok(f"GFF join spot check ({take} sampled)", "faa protein IDs found in GFFs")
+    elif ok_join == 0:
+        warn(f"GFF join spot check ({take} sampled)",
+             "no faa ID joined to its GFF -- IDs may differ, so bacterial synteny "
+             "will be not_evaluable. e.g. " + (bad[0] if bad else f"{unreadable} unreadable"))
+    else:
+        warn(f"GFF join spot check ({take} sampled)",
+             f"{ok_join}/{take} joined; {unreadable} unreadable. e.g. "
+             + (bad[0] if bad else ""))
 
 
 def check_metadata(path, label, keys, sample_ids=None, key_col=None):
@@ -562,6 +616,24 @@ def check_specificity(cfg):
         else:
             warn("geNomad database not found", f"{db}; prophage context skipped")
 
+    # --- structure search (divergent-lineage confirmation) ------------------
+    ss = s.get("structure_search") or {}
+    if ss.get("enabled"):
+        checks = [("esmfold_weights", ss.get("esmfold_weights"), False),
+                  ("foldseek_pm_db", ss.get("foldseek_pm_db"), ".dbtype"),
+                  ("hhsuite_pm_db", ss.get("hhsuite_pm_db"), "_hhm.ffdata")]
+        for name, path, marker in checks:
+            probe = (str(path) + marker) if marker else path
+            if path and os.path.exists(probe):
+                ok(f"structure_search {name}", str(path))
+            else:
+                warn(f"structure_search {name} not staged", f"{path}; that stage "
+                     f"will be skipped (recorded, not fabricated)")
+        for tool in ("foldseek", "hhsearch"):
+            if not shutil.which(tool):
+                warn(f"{tool} not on PATH",
+                     "structure_search needs the optional `structure` env")
+
     # --- wall-chemistry reference -------------------------------------------
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -652,6 +724,7 @@ def main() -> None:
     print("\n--- sample table and proteomes ---")
     n = a.sample_faa or 10**9
     bac = check_sample_table(cfg, n)
+    check_gff_join(cfg, min(n, 20))
 
     print("\n--- bacteria metadata ---")
     bmeta = check_metadata(cfg["inputs"]["bacteria_metadata"], "bacteria_metadata", cfg["qc"],

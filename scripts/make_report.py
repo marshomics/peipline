@@ -23,6 +23,16 @@ def tool_version(cmd):
         return "not found"
 
 
+def yaml_safe_deps(path):
+    """Return the pinned dependency strings from a conda env YAML."""
+    try:
+        import yaml
+        y = yaml.safe_load(open(path)) or {}
+        return [d for d in (y.get("dependencies") or []) if isinstance(d, str)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def load(path, **kw):
     try:
         return pd.read_csv(path, sep="\t", **kw)
@@ -79,13 +89,19 @@ def main() -> None:
          f"Generated {datetime.now():%Y-%m-%d %H:%M}\n"]
 
     # ---- funnel -------------------------------------------------------------
-    L.append("## Screening funnel\n")
+    # This funnel is the C71 arm only. combine_filter scopes these counts to the
+    # C71-family profiles (PF12386 + SSF54001); PF03412/C39 hits are reported in
+    # the "C39 arm" section, never pooled here.
+    L.append("## C71 screening funnel\n")
+    L.append("Counts below are the **C71 arm** (PF12386 + the shared SSF54001 fold "
+             "net). PF03412 / C39 hits are reported separately in the C39 arm "
+             "section and are not included here.\n")
     L.append("| Step | Count |")
     L.append("|---|---|")
     for key in ["samples_in_table", "samples_searched", "samples_skipped",
                 "proteins_searched", "residues_searched", "unique_proteins_with_hit",
                 "proteins_specific_evidence", "proteins_ssf_only",
-                "proteins_hit_both_profiles", "samples_with_hit"]:
+                "proteins_hit_PF12386_and_SSF54001", "samples_with_hit"]:
         if key in stats.index:
             L.append(f"| {key.replace('_', ' ')} | {int(float(stats.loc[key, 'value'])):,} |")
     L.append(f"| triad-positive sequences | {tri['n_triad_positive']:,} |")
@@ -202,6 +218,63 @@ def main() -> None:
                             "discriminating fold from function. Investigate before "
                             "trusting c71.faa.\n"))
 
+    # ---- C39 arm (PeiR-class), reported separately, never pooled ------------
+    # The C39 arm searches PF03412 on its own scaffold with a spacing prior it
+    # LEARNS rather than borrows from C71. Its numbers live in their own tables and
+    # must never be added to the C71 counts above: a PF03412 hit is not a C71 hit.
+    c39_chosen_path = os.path.join(T, "triad_columns_c39.json")
+    if os.path.exists(c39_chosen_path):
+        try:
+            c39 = json.load(open(c39_chosen_path))
+        except Exception:  # noqa: BLE001
+            c39 = {}
+        c39tiers = load(os.path.join(T, "triad_filter_by_tier_c39.tsv"))
+        c39faa = os.path.join(a.outdir, "c39.faa")
+        n_c39 = sum(1 for _ in read_fasta(c39faa)) if os.path.exists(c39faa) else 0
+        L.append("## C39 arm (PeiR-class, PF03412)\n")
+        L.append("PeiR (D3DZZ6) and the CRISPRTarget viral Peis are MEROPS C39 "
+                 "(PF03412), not C71. They carry no PF12386 and cannot be aligned to "
+                 "the PF12386 scaffold; PeiR's catalytic Cys->His gap is 72, where "
+                 "C71's is 35. This arm therefore runs in parallel: its own PF03412 "
+                 "alignment, its own triad columns, its own decoy FDR. **None of "
+                 "these numbers are pooled with the C71 arm above.**\n")
+        L.append("> MEROPS C39 proper is the bacteriocin-processing peptidase domain "
+                 "of ABC exporters (double-glycine leader cleavage). Across 350,000 "
+                 "proteomes most PF03412 hits are transporters, not Pei. The learned "
+                 "triad and the per-family FDR below are the only things separating "
+                 "signal from that background; treat every hit as a candidate to "
+                 "confirm at the bench, not a called Pei.\n")
+        if c39.get("match_columns") and c39.get("spacing_mode") == "learned":
+            r1c, r2c, r3c = c39["residues"]
+            ci, cj, ck = c39["match_columns"]
+            lg = c39.get("learned_gaps") or [None, None]
+            L.append(f"Learned triad: **{r1c}{ci} - {r2c}{cj} - {r3c}{ck}** in PF03412 "
+                     f"match-state coordinates, from {c39.get('n_learning_sequences', 0):,} "
+                     f"PF03412 sequences. The Cys->His / His->Asp spacing was **learned, "
+                     f"not assumed**: {lg[0]} and {lg[1]} match columns. The C71 prior "
+                     f"(gap 35) was NOT applied — applying it would reject a gap-72 "
+                     f"enzyme like PeiR.\n")
+            L.append(f"Sequences in `c39.faa`: {n_c39:,}.\n")
+            if not c39tiers.empty:
+                L.append("### C39 triad filter by evidence tier\n")
+                L += md_table(c39tiers)
+        else:
+            L.append(f"> The C39 net returned no Pei-grade hits (empty specific "
+                     f"tier). PF03412 was searched; nothing cleared it and carried the "
+                     f"learned triad. `c39.faa` holds {n_c39:,} sequences. This is "
+                     f"recorded, not hidden: an empty arm is a result about these "
+                     f"proteomes, not a failure.\n")
+        c39fdr = fdr[fdr["profile"] == "PF03412"] if not fdr.empty and "profile" in fdr.columns else pd.DataFrame()
+        if not c39fdr.empty:
+            d = c39fdr.sort_values("bit_score").iloc[0]
+            L.append(f"> C39 decoy FDR (PF03412, own reversed decoys): at the lowest "
+                     f"reported score {d['bit_score']:.1f}, {int(d['n_decoy'])} decoy "
+                     f"vs {int(d['n_target'])} target hits, FDR {d['fdr']:.3g}. This is "
+                     f"PF03412's alone.\n")
+        L.append("> `pei_check` now certifies PeiR as findable (family c39 -> "
+                 "PF03412). With this arm off, it reports PeiR as unfindable and the "
+                 "screen is honest that a C71-only run cannot see it.\n")
+
     # ---- subgroups ----------------------------------------------------------
     if not assign.empty:
         sg = assign["subgroup"].value_counts().sort_index()
@@ -229,9 +302,16 @@ def main() -> None:
 
     if not conv.empty:
         L.append("### Convergence\n")
-        L += md_table(conv[["subgroup", "n_tips", "observed_origins", "null_random_mean",
-                            "null_brownian_mean", "fritz_purvis_D", "p_clustered",
+        L += md_table(conv[["subgroup", "n_tips", "parsimony_changes", "null_random_mean",
+                            "null_brownian_mean", "clustering_index", "p_clustered",
                             "interpretation"]])
+        L.append("> `parsimony_changes` is the Fitch gains+losses count (an **upper "
+                 "bound** on independent origins, not the origin count itself). "
+                 "`clustering_index` is a Brownian-anchored 0/1 scaled statistic "
+                 "(0 = as clumped as Brownian, 1 = random); it is **not** the "
+                 "Fritz-Purvis *D* reported in `phylogenetic_signal_D.tsv`, which "
+                 "is caper's sister-clade-difference *D*. The permutation "
+                 "`p_clustered` is conditional on the single ML tree.\n")
 
     if not coup.empty:
         nsig = int(coup["significant"].sum())
@@ -262,8 +342,15 @@ def main() -> None:
                  "cost of that assumption is visible.\n")
         sub = coefs[coefs["response"] == "has_c71"]
         cols = [c for c in ["domain", "model", "term", "estimate", "std_error", "p",
-                            "odds_ratio", "alpha", "n_tips", "n_positive"] if c in sub.columns]
+                            "q_bh", "odds_ratio", "alpha", "n_tips", "n_positive"]
+                if c in sub.columns]
         L += md_table(sub[cols])
+        if "q_bh" in sub.columns:
+            L.append("> `q_bh` is the Benjamini-Hochberg q-value across the "
+                     "phyloglm hypothesis coefficients (subgroup/response presence "
+                     "terms, both domains); the detection-bias covariates and the "
+                     "non-phylogenetic comparison glm are excluded from that family "
+                     "and carry raw `p` only.\n")
         L.append("> Coefficients on `completeness`, `log10_n50` and `log10_n_proteins` "
                  "quantify detection opportunity, not biology. A positive completeness "
                  "coefficient means the screen misses C71 in incomplete genomes, which "
@@ -312,10 +399,66 @@ def main() -> None:
                      f"aggregates at 7.0. Every published Pei lysis assay runs at "
                      f"pH 7.0-7.85, which is where the module is least competent.\n")
 
+    # ---- pseudomurein host genotype, and the discovery signal ---------------
+    cw = load(os.path.join(T, "cellwall_genotype.tsv"))
+    if not cw.empty and "pathway_call" in cw.columns:
+        L.append("## Pseudomurein host genotype\n")
+        L.append("Pseudomurein is restricted to two archaeal orders "
+                 "(Methanobacteriales, Methanopyrales), so the call is "
+                 "**taxonomy-first**: a genome in one of those orders is "
+                 "`pseudomurein_expected_by_taxonomy` regardless of markers. The "
+                 "marker block earns its keep only *outside* those orders "
+                 "(Lupo et al. 2025, doi:10.1128/msystems.01201-24). Every call "
+                 "below is a genomic hypothesis; confirmation is the wall "
+                 "chemistry itself (TalNAc, the beta-1,3 linkage).\n")
+        vc = cw["pathway_call"].value_counts()
+        L.append("| Call | Genomes |")
+        L.append("|---|---|")
+        for k, v in vc.items():
+            L.append(f"| {k} | {v:,} |")
+        L.append("")
+
+        # the headline: candidate PM OUTSIDE the two orders
+        ooo = cw[cw["pathway_call"].astype(str).str.startswith(
+            "pseudomurein_candidate_out_of_order")]
+        if len(ooo):
+            syn = ooo[ooo.get("synteny_status", "").astype(str) == "syntenic"] \
+                if "synteny_status" in ooo.columns else ooo.iloc[0:0]
+            L.append(f"### Candidate pseudomurein outside the two known orders "
+                     f"({len(ooo)})\n")
+            L.append("> These carry the PM-exclusive block (a muramyl ligase + the "
+                     "MraY-like GT + the CPS) but are **not** in Methanobacteriales "
+                     "or Methanopyrales. This is the discovery signal the screen "
+                     "exists to surface. It is a hypothesis, not a finding: the "
+                     "HMMs come from five genomes and miss divergent lineages, and "
+                     "genomic presence is not wall chemistry.\n")
+            if len(syn):
+                L.append(f"**{len(syn)} are SYNTENIC** — the block co-localizes on "
+                         f"one contig, the strongest genomic claim available. "
+                         f"These are the ones to take to the bench first.\n")
+                show = [c for c in ("sample", "species", "gtdb_order",
+                                    "n_muramyl_ligases", "contigs", "synteny_detail")
+                        if c in syn.columns]
+                L += md_table(syn[show].head(30))
+            n_disp = int((ooo.get("synteny_status", "").astype(str) == "dispersed").sum()) \
+                if "synteny_status" in ooo.columns else 0
+            n_unk = int((ooo.get("synteny_status", "").astype(str)
+                         == "not_evaluable").sum()) if "synteny_status" in ooo.columns else 0
+            if n_disp or n_unk:
+                L.append(f"> Of the rest, {n_disp} are `dispersed` (block present but "
+                         f"not co-localized — likely an HGT fragment) and {n_unk} are "
+                         f"`synteny_unknown` (no usable coordinates, or an assembly "
+                         f"too fragmented to judge — add a GFF via `inputs.gff_col`, "
+                         f"or read this as 'not evaluated', never as 'not PM').\n")
+        else:
+            L.append("No candidate pseudomurein was found outside the two known "
+                     "orders. Given how strongly PM tracks taxonomy, that is the "
+                     "expected result, not a null one.\n")
+
     # ---- the one falsifiable check ------------------------------------------
     if not lysis.empty:
         L.append("## Validation against a measured phenotype\n")
-        L.append("Subedi et al. 2015 (doi:10.1155/2015/828693) plated purified "
+        L.append("Schofield et al. 2015 (doi:10.1155/2015/828693) plated purified "
                  "PeiW and PeiP on eleven methanogens. This pipeline predicts "
                  "susceptibility from host wall chemistry (Kandler & Koenig 1978) "
                  "using a rule derived from the chromogenic substrate series. "
@@ -364,13 +507,53 @@ def main() -> None:
                      "none was invented. Locating this site is the most obvious "
                      "experiment this analysis cannot do.\n")
 
-    # ---- versions & files ---------------------------------------------------
-    L.append("## Versions\n```")
-    for cmd in (["prodigal", "-v"], ["hmmsearch", "-h"], ["hmmalign", "-h"],
-                ["trimal", "--version"], ["iqtree2", "--version"], ["mmseqs", "version"],
-                ["diamond", "version"], ["Rscript", "--version"]):
-        L.append(f"{cmd[0]}: {tool_version(cmd)}")
-    L.append("```\n")
+    # ---- provenance ---------------------------------------------------------
+    # Seeds and pinned versions, so the run is reproducible from the report alone.
+    L.append("## Provenance\n")
+    seeds = {
+        "tree.seed": (cfg.get("tree") or {}).get("seed"),
+        "active_site.random_state": (cfg.get("active_site") or {}).get("random_state"),
+        "convergence.seed": (cfg.get("convergence") or {}).get("seed"),
+        "phyloglm.seed": (cfg.get("phyloglm") or {}).get("seed"),
+    }
+    L.append("Seeds: " + ", ".join(f"`{k}` = {v}" for k, v in seeds.items()
+                                   if v is not None) + ".\n")
+    L.append(f"Config: `{os.path.abspath(a.config)}`. "
+             f"C39 arm (PF03412): "
+             f"{'enabled' if (cfg['profiles'].get('PF03412') or {}).get('enabled') else 'disabled'}. "
+             f"Its counts are reported only in the C39 section, never pooled into "
+             f"the C71 funnel above.\n")
+
+    # Pinned tool versions, read from the env YAMLs. The report runs in the `py`
+    # env, which does not have hmmsearch/iqtree2/Rscript on PATH, so shelling out
+    # to `--version` returns "not found" for every one of them (it always did).
+    # The authoritative record is the pinned conda spec, and dist/locks/*.txt (if
+    # present) holds the exact solve.
+    L.append("### Pinned tool versions (from envs/*.yaml)\n```")
+    envdir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "envs")
+    want = ("hmmer", "prodigal", "trimal", "iqtree", "mmseqs2", "diamond",
+            "mafft", "hyphy", "foldseek", "hhsuite", "r-base", "python")
+    seen = {}
+    try:
+        for ef in sorted(os.listdir(envdir)):
+            if not ef.endswith(".yaml"):
+                continue
+            for dep in (yaml_safe_deps(os.path.join(envdir, ef))):
+                name = str(dep).split("=")[0].strip()
+                if name in want and name not in seen:
+                    seen[name] = str(dep)
+        for name in want:
+            if name in seen:
+                L.append(seen[name])
+    except Exception as e:  # noqa: BLE001
+        L.append(f"(could not read envs/: {e})")
+    if not seen:
+        L.append("(no env YAMLs found)")
+    L.append("```")
+    L.append("> Versions above are the pinned conda specs, not live `--version` "
+             "probes: the report runs in the `py` environment, which does not "
+             "carry the bioinformatics binaries. `dist/locks/*.txt` (written by "
+             "setup/build_envs.sh) records the exact solved builds.\n")
 
     L.append("## Files\n")
     for root, _, files in os.walk(a.outdir):

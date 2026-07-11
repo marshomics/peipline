@@ -2,7 +2,7 @@
 # ============================================================================
 # STEP 1 of 2 — run this on a machine WITH internet.
 #
-# Builds the six conda environments from conda-forge and bioconda only, then
+# Builds the seven conda environments from conda-forge and bioconda only, then
 # packs each into a relocatable tarball with conda-pack. Nothing from the
 # `defaults` / `anaconda` / `main` / `r` channels is used or contacted.
 #
@@ -68,7 +68,7 @@ for e in "${ENVS[@]}"; do
     fi
 done
 
-# conda-pack itself, in its own env so it cannot perturb the six
+# conda-pack itself, in its own env so it cannot perturb the seven
 if ! command -v conda-pack &> /dev/null; then
     echo "[build_envs] installing conda-pack"
     case "$SOLVER" in

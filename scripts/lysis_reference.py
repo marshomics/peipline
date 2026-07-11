@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """What PeiW and PeiP have actually been measured to cut, and what they lyse.
 
-Single source: Subedi B, Martin WF, Carbone V, Duin EC, Cronin B, Sauter J,
-Schofield LR, Sutherland-Smith AJ, Ronimus RS (2015) "Biochemical
-Characterisation of Phage Pseudomurein Endoisopeptidases PeiW and PeiP Using
-Synthetic Peptides", Archaea 2015:828693. doi:10.1155/2015/828693.
+Single source: Schofield LR, Beattie AK, Tootill CM, Dey D, Ronimus RS (2015)
+"Biochemical Characterisation of Phage Pseudomurein Endoisopeptidases PeiW and
+PeiP Using Synthetic Peptides", Archaea 2015:828693. doi:10.1155/2015/828693.
+(Author list verified against Crossref for this DOI; earlier drafts of this
+pipeline miscited it as "Subedi et al." -- that attribution was wrong.)
 
 Two tables, and they are the only experimental ground truth this pipeline has.
 
@@ -15,7 +16,7 @@ Two tables, and they are the only experimental ground truth this pipeline has.
 
 Why this module exists separately from cellwall_reference.py
 ------------------------------------------------------------
-Kandler & Koenig say what the wall is made of. Subedi et al. say what the enzyme
+Kandler & Koenig say what the wall is made of. Schofield et al. say what the enzyme
 cuts. Those are different claims from different experiments, and conflating them
 is how a chemistry table quietly becomes a prediction. The lysis panel is used
 here to *test* predictions derived from the chemistry, never to generate them.
@@ -25,7 +26,7 @@ The Thr problem, stated plainly
 Two papers disagree about threonine at P1, and the disagreement is informative
 rather than embarrassing.
 
-  Subedi et al. 2015   Glu-gamma-Thr-pNA: no detectable activity, either enzyme.
+  Schofield et al. 2015   Glu-gamma-Thr-pNA: no detectable activity, either enzyme.
                        M. ruminantium M1, whose wall carries Thr at P1: not
                        lysed by either enzyme.
   Wang et al. 2025     the Glu-gamma-Thr-epsilon-Lys ISOPEPTIDE is cleaved by
@@ -57,7 +58,7 @@ The observation that closes the loop
 -------------------------------------
 Methanobrevibacter ruminantium M1 is the Thr-type organism. It resists PeiW and
 PeiP. Its own prophage, Phi-mru, encodes an endoisopeptidase, PeiR, that lyses
-it -- and PeiR shows little homology to PeiW or PeiP (Subedi et al. 2015, citing
+it -- and PeiR shows little homology to PeiW or PeiP (Schofield et al. 2015, citing
 Attwood et al.). A divergent enzyme for a divergent wall, in the one host where
 we can check.
 
@@ -68,7 +69,7 @@ consulted.
 """
 from __future__ import annotations
 
-CITATION = ("Subedi et al. 2015, Archaea 2015:828693 "
+CITATION = ("Schofield et al. 2015, Archaea 2015:828693 "
             "(doi:10.1155/2015/828693)")
 
 # ---------------------------------------------------------------------------

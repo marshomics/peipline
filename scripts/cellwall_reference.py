@@ -86,7 +86,7 @@ NO_PSEUDOMUREIN = {"s__Methanospirillum hungatei", "s__Methanospirillum hungatii
 DISPUTED = {
     "s__Methanosphaera stadtmanae":
         "serine-for-alanine is not in Kandler & Koenig 1978 (the species was "
-        "described in 1985). Corroborating but still secondary: Subedi et al. "
+        "described in 1985). Corroborating but still secondary: Schofield et al. "
         "2015 cleave Glu-gamma-Ser-pNA with both PeiW and PeiP, and lyse "
         "DSM 3091, attributing that lysis to a serine wall. Consistent; not "
         "primary. Supply the chemistry reference before using it.",
@@ -96,7 +96,7 @@ DISPUTED = {
 }
 
 # Residues this enzyme family has been shown to accept or reject at P1, from the
-# chromogenic series of Subedi et al. 2015 (see lysis_reference.py). Kept here so
+# chromogenic series of Schofield et al. 2015 (see lysis_reference.py). Kept here so
 # a chemistry call of "Ser" is not treated as exotic: it is a residue PeiW and
 # PeiP demonstrably cut.
 #

@@ -78,6 +78,10 @@ set-threads:
   module_trees: 16
   cellwall_genotype: 16
   selection: 16
+  # C39 arm (parallel to the C71 arm; present only when PF03412 is enabled)
+  extract_hits_c39: 8
+  seq_weights_c39: 16
+  c39_faa: 8
 
 set-resources:
   # ---- short, high-count: standard.q -------------------------------------
@@ -192,3 +196,25 @@ set-resources:
     mem_mb: 64000
     h_rt: "120:00:00"
     queue: "long.q"
+
+  # ---- C39 arm (PF03412) --------------------------------------------------
+  # Mirrors the C71 twins. Without these the c39 rules fall to default-resources
+  # (8 GB / 4 h / standard.q) and hmmalign_c39 -- which streams every PF03412 hit,
+  # and PF03412 is abundant (bacteriocin exporters) -- is killed on standard.q,
+  # blocking triad_c39 and therefore `report`. hmmalign_c39 goes to long.q.
+  extract_hits_c39:
+    mem_mb: 16000
+    h_rt: "08:00:00"
+  seq_weights_c39:
+    mem_mb: 48000
+    h_rt: "12:00:00"
+  hmmalign_c39:
+    mem_mb: 64000
+    h_rt: "72:00:00"
+    queue: "long.q"
+  triad_c39:
+    mem_mb: 64000
+    h_rt: "06:00:00"
+  c39_faa:
+    mem_mb: 16000
+    h_rt: "04:00:00"

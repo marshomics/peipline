@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score the pipeline's host-chemistry rule against the only measured phenotype.
 
-Subedi et al. 2015 put purified PeiW and PeiP on plates of eleven methanogens and
+Schofield et al. 2015 put purified PeiW and PeiP on plates of eleven methanogens and
 recorded which lysed. That table is the one place in this project where a
 prediction can be wrong in a way that shows.
 

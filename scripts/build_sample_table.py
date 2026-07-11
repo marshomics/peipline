@@ -128,10 +128,24 @@ def autodetect_key(meta, ids, path):
 def attach_meta(df, meta, key_left, key_right, qc_cfg, path, extra=()):
     """Merge QC, taxonomy, domain, species and every gtdb_* column."""
     ren = {}
+    missing_qc = []
     for k in QC_KEYS:
         col = find_col(meta, qc_cfg[k], k, path=path)
         if col:
             ren[col] = k
+        else:
+            missing_qc.append(k)
+    if missing_qc:
+        # The module docstring promises QC problems fail loudly. A missing QC
+        # column becomes an all-NaN covariate that degrades the phyloglm
+        # detection-bias model four rules downstream, so name it here where it is
+        # visible rather than let it surface as a silent NaN. Not a hard error:
+        # a metadata source may legitimately lack one, and the regression drops
+        # that covariate; but it must never be silent.
+        print(f"[sample_table] WARNING: QC column(s) {missing_qc} not found in "
+              f"{path}. The matching covariate(s) will be NaN and any phyloglm "
+              f"term on them is uninformative. Add the column or drop the covariate "
+              f"from config.phyloglm.", file=sys.stderr)
     for canon, cands in extra:
         col = find_col(meta, cands, canon, path=path)
         if col:
@@ -247,6 +261,20 @@ def main() -> None:
     bac = bac.rename(columns={IN["sample_col"]: "sample", IN["faa_col"]: "faa"})
     bac["source"] = "provided_faa"
     bac["prodigal_mode"] = pd.NA
+    # Optional per-genome GFF path for the pseudomurein synteny check. Only read
+    # for out-of-order candidates, so a missing value is harmless (synteny is
+    # then "not_evaluable" for that genome, never a false negative).
+    gff_col = IN.get("gff_col")
+    if gff_col and gff_col in bac.columns:
+        bac["gff"] = bac[gff_col]
+        print(f"[sample_table] bacterial GFF paths from column '{gff_col}'",
+              file=sys.stderr)
+    else:
+        bac["gff"] = pd.NA
+        if gff_col:
+            print(f"[sample_table] inputs.gff_col='{gff_col}' not found in the "
+                  f"sample table; bacterial synteny will be not_evaluable",
+                  file=sys.stderr)
 
     if IN.get("bacteria_metadata"):
         bmeta = pd.read_csv(IN["bacteria_metadata"], sep="\t", dtype=str, low_memory=False)
@@ -297,8 +325,13 @@ def main() -> None:
         arc["sample"] = arc["_join"].fillna(arc["sample"])
         arc = arc.drop(columns=["_join", "fna"], errors="ignore")
 
-    cols = ["sample", "faa", "domain", "source", "prodigal_mode", "classification",
-            "species", "completeness", "contamination", "n50", "contigs", "genome_size"]
+    # Archaea: the GFF Prodigal now writes beside each .faa (same stem).
+    if len(arc):
+        arc["gff"] = arc["faa"].astype(str).str.replace(r"\.faa$", ".gff", regex=True)
+
+    cols = ["sample", "faa", "gff", "domain", "source", "prodigal_mode",
+            "classification", "species", "completeness", "contamination", "n50",
+            "contigs", "genome_size"]
     gtdb_extra = sorted({c for d in (bac, arc) for c in d.columns
                          if c.lower().startswith("gtdb_") and c != "gtdb_representative"})
     for d in (bac, arc):

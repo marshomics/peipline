@@ -614,7 +614,19 @@ def main() -> None:
           f"{100 * pca.explained_variance_ratio_.sum():.1f}% variance; "
           f"scores L2-normalised (spherical k-means)", file=sys.stderr)
 
-    w_fit = seq_w[fit_idx]
+    # Weighting on the fit set: `fit_idx` is ALREADY one representative per 90%
+    # cluster, so redundancy is removed by dereplication. Re-applying 1/cluster_size
+    # here would double-correct -- an 8,000-member cluster's single representative
+    # would get weight 1/8000 and effectively drop out of centroid placement and
+    # the k sweep -- and would disagree with the PCA basis, which is unweighted over
+    # these same representatives. Use uniform weight when we dereplicated. Only when
+    # no cluster column was available (no dereplication) do the 1/size weights
+    # remain the fallback correction.
+    dereplicated = bool(pd.notna(seq_cluster.to_numpy()).all())
+    w_fit = np.ones(len(fit_idx)) if dereplicated else seq_w[fit_idx]
+    print(f"[active_site] k-means weight: "
+          f"{'uniform (reps already dereplicated)' if dereplicated else '1/cluster_size fallback'}",
+          file=sys.stderr)
     k_best, metrics, _, k_gap = choose_k(Z_fit, acfg["k_min"], acfg["k_max"], seed,
                                          acfg.get("k_criterion", "silhouette_cosine"),
                                          sample_weight=w_fit)

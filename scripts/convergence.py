@@ -205,11 +205,11 @@ def main() -> None:
 
         rows.append({
             "subgroup": k, "n_tips": int(labels.sum()), "prevalence": prev,
-            "observed_origins": obs,
+            "parsimony_changes": obs,
             "null_random_mean": mean_r, "null_random_sd": float(null.std()),
             "null_brownian_mean": mean_b, "null_brownian_sd": float(brown.std()),
             "p_clustered": p,
-            "fritz_purvis_D": D,
+            "clustering_index": D,
             "interpretation": interp,
         })
         print(f"[convergence] {k}: {obs} origins, random null {mean_r:.1f}, "
@@ -234,7 +234,7 @@ def main() -> None:
     fig, axes = plt.subplots(1, 2, figsize=(6.4, 2.4))
     ax = axes[0]
     x = np.arange(len(df))
-    ax.bar(x - 0.2, df["observed_origins"], width=0.35, color=PALETTE[0], label="observed")
+    ax.bar(x - 0.2, df["parsimony_changes"], width=0.35, color=PALETTE[0], label="observed")
     ax.errorbar(x + 0.2, df["null_random_mean"], yerr=df["null_random_sd"], fmt="o",
                 ms=3, color=PALETTE[4], lw=0.8, capsize=2, label="tip-shuffle null")
     ax.errorbar(x + 0.2, df["null_brownian_mean"], yerr=df["null_brownian_sd"], fmt="s",
@@ -246,8 +246,8 @@ def main() -> None:
 
     ax = axes[1]
     cols = palette(len(df))
-    ax.bar(x, df["fritz_purvis_D"].fillna(0), color=cols, width=0.6)
-    for xi, v in zip(x, df["fritz_purvis_D"]):
+    ax.bar(x, df["clustering_index"].fillna(0), color=cols, width=0.6)
+    for xi, v in zip(x, df["clustering_index"]):
         if not np.isfinite(v):
             ax.text(xi, 0.02, "undefined", rotation=90, fontsize=5.5, ha="center",
                     va="bottom", color="0.3")

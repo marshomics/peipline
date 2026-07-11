@@ -83,7 +83,10 @@ def main() -> None:
     g["n_c71"] = g["n_c71"].fillna(0).astype(int)
     g["has_c71"] = (g["n_c71"] > 0).astype(int)
 
-    for k in sorted(assign["subgroup"].unique()):
+    # dropna: a NaN subgroup must not become an `sg_nan` column that phyloglm.R
+    # then picks up via grep("^sg_") as a spurious subgroup. sorted() on a mixed
+    # NaN column also raises.
+    for k in sorted(assign["subgroup"].dropna().unique()):
         s = set(assign.loc[assign["subgroup"] == k, "sample"])
         g[f"sg_{k}"] = g["sample"].isin(s).astype(int)
 

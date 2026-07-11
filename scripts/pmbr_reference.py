@@ -113,8 +113,8 @@ MTH719 = {
 PH_BINDING = {4.0: "none", 6.5: "partial", 9.0: "complete"}
 PH_AGGREGATION = {7.0: "high-molecular-mass aggregate", 9.0: "17.4 kDa monomer"}
 PUBLISHED_ASSAY_PH = {
-    "Subedi 2015 synthetic peptide": 7.85,
-    "Subedi 2015 cell suspension / plate": 7.0,
+    "Schofield 2015 synthetic peptide": 7.85,
+    "Schofield 2015 cell suspension / plate": 7.0,
     "Morii & Koga cell wall": "6.8-7.4",
 }
 

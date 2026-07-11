@@ -74,7 +74,13 @@ def run_hmmscan(pfam, faa, out, evalue, threads):
         if not os.path.exists(pfam + ext):
             sys.exit(f"[domain_arch] {pfam} is not pressed (missing {ext}). "
                      f"Run: hmmpress {pfam}")
+    # --domE alongside -E: without a domain E-value cutoff, a protein whose
+    # FULL-sequence E-value exceeds `evalue` is dropped entirely even if it carries
+    # one strong PMBR domain. The PMBR count is read at the 30-35 aa repeat level
+    # and the 3-motif rule is a cliff, so a per-domain floor matters right where it
+    # is load-bearing.
     cmd = ["hmmscan", "--cpu", str(threads), "--noali", "-E", str(evalue),
+           "--domE", str(evalue),
            "--domtblout", out, "-o", os.devnull, pfam, faa]
     print("+ " + " ".join(cmd), file=sys.stderr)
     subprocess.run(cmd, check=True)

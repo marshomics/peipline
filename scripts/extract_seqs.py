@@ -74,6 +74,16 @@ def main() -> None:
     ap.add_argument("--out-idmap")
     ap.add_argument("--out-evidence",
                     help="tier of every sequence written to the output FASTA")
+    ap.add_argument("--family", default=None,
+                    help="restrict --hits extraction to one family arm. With --config, "
+                         "keeps only proteins whose profiles_hit intersects that "
+                         "family's specific + sensitivity profiles, relabels evidence "
+                         "relative to THAT family's specific profile, and prefixes "
+                         "seq_ids with the family name. Omit for the historical "
+                         "single-arm behaviour (all hits, c71_ prefix).")
+    ap.add_argument("--config",
+                    help="config.yaml; required with --family to resolve the arm's "
+                         "profile set.")
     ap.add_argument("--threads", type=int, default=4)
     a = ap.parse_args()
 
@@ -82,7 +92,34 @@ def main() -> None:
                          usecols=["sample", "protein_id", "faa", "profiles_hit", "evidence"],
                          dtype=str).drop_duplicates(subset=["sample", "protein_id"])
         df = df.reset_index(drop=True)
-        df["seq_id"] = [f"c71_{i:07d}" for i in range(len(df))]
+
+        # --- family scoping ---------------------------------------------------
+        # Why this is here and not in combine_filter: a protein that hit ONLY
+        # PF03412 is a C39 candidate, not a C71 `ssf_only` sequence. If it reached
+        # the C71 arm it would be aligned to the PF12386 scaffold, score as
+        # low_coverage against the C71 triad columns, and be silently miscounted.
+        # Each arm takes the hits that belong to it: its specific model, plus the
+        # shared SSF54001 fold net. A papain-fold protein (SSF54001-only) is a
+        # candidate for BOTH arms and is tested against each family's own columns.
+        prefix = "c71"
+        if a.family:
+            prefix = a.family
+            if a.config:
+                from utils import load_config  # noqa: E402
+                fam = (load_config(a.config).get("families") or {}).get(a.family) or {}
+                spec = fam.get("specific_profile")
+                famset = set(([spec] if spec else []) +
+                             list(fam.get("sensitivity_profiles") or []))
+                if famset:
+                    ph = df["profiles_hit"].fillna("")
+                    keep = ph.map(lambda s: bool(set(str(s).split(",")) & famset))
+                    df = df[keep.to_numpy()].reset_index(drop=True)
+                    # evidence is now relative to THIS family's specific profile
+                    df["evidence"] = ph[keep.to_numpy()].reset_index(drop=True).map(
+                        lambda s: "specific" if spec in str(s).split(",") else "ssf_only")
+                    print(f"[extract] family={a.family}: kept {len(df)} proteins whose "
+                          f"profiles_hit intersects {sorted(famset)}", file=sys.stderr)
+        df["seq_id"] = [f"{prefix}_{i:07d}" for i in range(len(df))]
 
         by_faa = defaultdict(dict)
         for faa, pid, sid, smp in zip(df["faa"], df["protein_id"], df["seq_id"], df["sample"]):

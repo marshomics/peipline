@@ -126,7 +126,8 @@ def main() -> None:
                                         int(c71.get("gap_tolerance") or 8))
         if adm:
             fail("the C71 spacing prior admits PeiR. That should be impossible "
-                 "(PeiR's Cys->His gap is 72); the reference data are wrong.")
+                 "(no PeiR histidine lies within 35+/-8 of C90); the reference "
+                 "data are wrong.")
         else:
             ok(f"the C71 prior correctly rejects PeiR -- which is exactly why the "
                f"C39 arm must not borrow it. Gaps from C90: {peir_his_candidates()}")
@@ -202,7 +203,8 @@ def main() -> None:
               f"[pei_check] The model is declared in config.profiles but disabled, "
               f"because searching it before the per-family alignment path exists "
               f"would pool C39 hits with C71 hits and score them against C71 triad "
-              f"columns. PeiR's Cys->His gap is 72; C71's prior is 35.\n"
+              f"columns. No PeiR histidine lies at the C71 gap of 35 (its "
+              f"downstream His sit at gaps 14/72/91/102 from C90).\n"
               f"[pei_check] Found and mangled is worse than not found. Enable it "
               f"only once triad_detect_filter.py aligns each family to its own "
               f"scaffold.\n"

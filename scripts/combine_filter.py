@@ -167,7 +167,11 @@ def main() -> None:
           file=sys.stderr)
 
     map_files = sorted(glob.glob(os.path.join(a.map_dir, "batch_*.map.tsv.gz")))
-    smap = pd.concat([pd.read_csv(m, sep="\t") for m in map_files], ignore_index=True)
+    # dtype=str on the join key: pandas would otherwise infer a numeric/leading-zero
+    # sample ID (e.g. 0001234 -> 1234), and the sample->faa merge below would then
+    # miss and abort. Every other join in the pipeline pins this; this one did not.
+    smap = pd.concat([pd.read_csv(m, sep="\t", dtype={"sample": str})
+                      for m in map_files], ignore_index=True)
     smap["sample"] = smap["sample"].astype(str)
 
     if len(all_dom):
@@ -224,6 +228,16 @@ def main() -> None:
         pd.DataFrame(columns=["profile", "bit_score", "n_target", "n_decoy", "fdr",
                               "applied_threshold"]).to_csv(a.out_fdr, sep="\t", index=False)
 
+    # The screening funnel is the C71 arm. With PF03412 (the C39 arm) enabled its
+    # hits are present in `best`, but a PF03412-only protein is NOT a C71 hit and
+    # must never inflate the C71 funnel -- most PF03412 hits are bacteriocin
+    # exporters. A profile belongs to the C71 arm if its family is c71 or the shared
+    # fold net (family null = SSF54001); PF03412 (family c39) is excluded. When
+    # PF03412 is disabled this scoping is a no-op (the only profiles are C71-family).
+    fam_of = {p: PROF[p].get("family") for p in PROF}
+    c71set = {p for p in PROF if fam_of[p] in ("c71", None)}
+    c39_specific = ((cfg.get("families") or {}).get("c39") or {}).get("specific_profile")
+
     n_ok = int((smap["status"] == "ok").sum())
     stats = {
         "samples_in_table": len(smap),
@@ -234,18 +248,29 @@ def main() -> None:
         "min_profile_coverage": min_cov,
         "domain_rows_passing": len(all_dom),
         "protein_profile_pairs": len(best),
-        "unique_proteins_with_hit": int(best[prot].drop_duplicates().shape[0]) if len(best) else 0,
-        "samples_with_hit": int(best["sample"].nunique()) if len(best) else 0,
+        "funnel_scope": "c71_arm (PF12386 + SSF54001); PF03412/C39 counted separately",
     }
     for label in sorted(PROF):
         stats[f"threshold_{label}"] = str(thresholds[label])
     if len(best):
-        uniq = best.drop_duplicates(prot)
+        uniq = best.drop_duplicates(prot).copy()
+        ph = uniq["profiles_hit"].str.split(",")
+        in_c71 = ph.map(lambda xs: bool(set(xs) & c71set))
+        u71 = uniq[in_c71.to_numpy()]
+        # C71-scoped funnel
+        stats["unique_proteins_with_hit"] = int(len(u71))
+        stats["samples_with_hit"] = int(u71["sample"].nunique()) if len(u71) else 0
+        stats["proteins_specific_evidence"] = int((u71["evidence"] == "specific").sum())
+        stats["proteins_ssf_only"] = int((u71["evidence"] == "ssf_only").sum())
+        stats["proteins_hit_PF12386_and_SSF54001"] = int(
+            u71["profiles_hit"].str.split(",").map(
+                lambda xs: (specific in xs) and bool((set(xs) & c71set) - {specific})).sum())
+        # per-profile raw counts (all arms), and the C39 arm reported separately
         for lab, n in best["profile"].value_counts().items():
             stats[f"proteins_hit_{lab}"] = int(n)
-        stats["proteins_specific_evidence"] = int((uniq["evidence"] == "specific").sum())
-        stats["proteins_ssf_only"] = int((uniq["evidence"] == "ssf_only").sum())
-        stats["proteins_hit_both_profiles"] = int((uniq["n_profiles_hit"] == 2).sum())
+        if c39_specific and c39_specific in PROF:
+            stats["proteins_c39_specific_PF03412"] = int(
+                uniq["profiles_hit"].str.split(",").map(lambda xs: c39_specific in xs).sum())
 
     pd.Series(stats).rename("value").rename_axis("metric").to_csv(a.out_stats, sep="\t")
     for k, v in stats.items():

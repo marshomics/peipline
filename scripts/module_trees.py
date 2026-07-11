@@ -313,8 +313,11 @@ def main() -> None:
     ax.set_xticks([0, 1])
     ax.set_xticklabels(["C71 catalytic tree", "PMBR tree"])
     ax.set_yticks([])
-    ax.set_title(f"Mantel r = {r:.3f} (p = {p:.4g}); "
-                 f"normalised RF = {rf_norm:.3f}", loc="left")
+    # Mantel r is descriptive only (its permutation p is inflated on patristic
+    # matrices and is deliberately NOT reported); significance is the tip-shuffle
+    # RF null. `p` was never in scope here -- this line used to crash.
+    ax.set_title(f"Mantel r = {r:.3f} (descriptive); norm. RF = {rf_norm:.3f}, "
+                 f"tip-shuffle p = {p_rf:.4g}", loc="left")
     for c in classes:
         ax.plot([], [], color=cmap[c], lw=1.2, label=c)
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5))

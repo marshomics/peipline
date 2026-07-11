@@ -52,21 +52,31 @@ def run_prodigal(fna, faa, ffn, mode, table):
     os.replace is atomic within a filesystem, so anything at the final path is
     complete. `.done` is written last, so a half-renamed pair is detectable too.
     """
-    tmp_faa, tmp_ffn, done = faa + ".tmp", ffn + ".tmp", faa + ".done"
-    for p in (tmp_faa, tmp_ffn, done):
+    gff = os.path.splitext(faa)[0] + ".gff"
+    tmp_faa, tmp_ffn, tmp_gff = faa + ".tmp", ffn + ".tmp", gff + ".tmp"
+    done = faa + ".done"
+    for p in (tmp_faa, tmp_ffn, tmp_gff, done):
         if os.path.exists(p):
             os.remove(p)
+    # Emit the GFF (was -o /dev/null). It carries contig + start/end/strand per
+    # gene, which the pseudomurein synteny check needs, and its feature IDs match
+    # the .faa protein ids. Tiny compared with the proteome.
     cmd = ["prodigal", "-i", fna, "-a", tmp_faa, "-d", tmp_ffn,
-           "-p", mode, "-g", str(table), "-m", "-q", "-o", "/dev/null"]
+           "-p", mode, "-g", str(table), "-m", "-q", "-f", "gff", "-o", tmp_gff]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode == 0 and os.path.exists(tmp_faa) and os.path.getsize(tmp_faa) > 0:
         os.replace(tmp_faa, faa)
         if os.path.exists(tmp_ffn):
             os.replace(tmp_ffn, ffn)
+        if os.path.exists(tmp_gff):
+            os.replace(tmp_gff, gff)
+        # Persist the actual gene-call mode in the marker. prodigal_mode is a
+        # detection-bias covariate downstream; a resumed run must report the mode
+        # that produced the cached proteome, not the literal string "cached".
         with open(done, "w") as fh:
-            fh.write("ok\n")
+            fh.write(f"{mode}\n")
     else:
-        for p in (tmp_faa, tmp_ffn):
+        for p in (tmp_faa, tmp_ffn, tmp_gff):
             if os.path.exists(p):
                 os.remove(p)
     return r
@@ -102,7 +112,12 @@ def main() -> None:
         # file from an older run is still possible: `.done` is the marker.
         if os.path.exists(faa) and os.path.getsize(faa) > 0 and \
                 os.path.exists(faa + ".done"):
-            rows.append((stem, fna, faa, "cached", count_faa(faa), genome_size(fna)))
+            # Recover the real gene-call mode from the marker (older markers held
+            # "ok"; treat those as unknown rather than inventing a mode).
+            cached_mode = open(faa + ".done").read().strip() or "unknown"
+            if cached_mode == "ok":
+                cached_mode = "cached_mode_unknown"
+            rows.append((stem, fna, faa, cached_mode, count_faa(faa), genome_size(fna)))
             continue
 
         size = genome_size(fna)

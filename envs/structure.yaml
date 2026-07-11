@@ -1,0 +1,15 @@
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults   # never fall back to defaults/anaconda
+dependencies:
+  - python=3.11
+  - foldseek=9.427df8a
+  - hhsuite=3.3.0
+  - numpy=1.26.4
+  - pandas=2.2.2
+  - pyyaml=6.0
+  # ESMFold is NOT here: it needs torch + the esm package + a GPU, and its weights
+  # are staged separately (specificity.structure_search.esmfold_weights). Install
+  # it in its own GPU env if you want the folding stage; foldseek/hhsearch run
+  # against pre-computed or externally predicted structures otherwise.

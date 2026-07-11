@@ -340,9 +340,21 @@ def main() -> None:
     with open(a.chosen) as fh:
         tri = json.load(fh)
 
+    def _check_site_count(d, method):
+        # HyPhy emits one MLE row per codon/match column, in order. If that count
+        # ever differs from L (the match-column count the CDS was aligned to), the
+        # positional match_col = i mapping below is silently off and every dN/dS is
+        # attributed to the wrong column -- the coordinate-drift class this pipeline
+        # guards against everywhere else. Fail instead of misattributing.
+        if len(d) != L:
+            sys.exit(f"[selection] {method} returned {len(d)} sites but the "
+                     f"alignment has {L} match columns; the site->column mapping "
+                     f"would be wrong. Aborting rather than misplacing selection.")
+
     rows = []
     if "FEL" in results:
         d = results["FEL"]["MLE"]["content"]["0"]
+        _check_site_count(d, "FEL")
         hdr = [h[0] for h in results["FEL"]["MLE"]["headers"]]
         for i, r in enumerate(d):
             rec = dict(zip(hdr, r))
@@ -352,6 +364,7 @@ def main() -> None:
                          "p": rec.get("p-value")})
     if "MEME" in results:
         d = results["MEME"]["MLE"]["content"]["0"]
+        _check_site_count(d, "MEME")
         hdr = [h[0] for h in results["MEME"]["MLE"]["headers"]]
         for i, r in enumerate(d):
             rec = dict(zip(hdr, r))

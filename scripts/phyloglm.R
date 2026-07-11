@@ -388,10 +388,29 @@ for (dom in c("Bacteria", "Archaea")) {
 
 emptydt <- function(cols) setNames(data.table(matrix(nrow = 0, ncol = length(cols))), cols)
 
-fwrite(if (length(coefs)) rbindlist(coefs, use.names = TRUE, fill = TRUE)
-       else emptydt(c("term","estimate","std_error","z","p","odds_ratio","model",
-                      "response","domain","n_tips","n_positive","alpha","n_genomes")),
-       out_coef, sep = "\t")
+# Multiple-testing control across the coefficient family. The pipeline reports
+# many phyloglm coefficients (has_c71, has_specific, every sg_* subgroup, x two
+# domains, x several covariates); reporting raw p across all of them invites a
+# spurious "significant" effect. Add a BH q-value computed WITHIN the phylogenetic
+# model family, excluding intercepts and the nuisance detection-bias covariates
+# (completeness, n50, contigs, n_proteins, n_genomes) so the correction is over the
+# biological hypotheses (subgroup/response presence), not the bias controls. The
+# non-phylogenetic comparison glm keeps raw p (it is a comparison, not inference).
+# q_bh is NA for excluded rows; raw p is always kept visible.
+coef_tab <- if (length(coefs)) rbindlist(coefs, use.names = TRUE, fill = TRUE) else
+  emptydt(c("term","estimate","std_error","z","p","odds_ratio","model",
+            "response","domain","n_tips","n_positive","alpha","n_genomes"))
+if (nrow(coef_tab) && "p" %in% names(coef_tab)) {
+  coef_tab[, q_bh := NA_real_]
+  nuisance <- c("(Intercept)", "completeness", "log10_n50", "log10_contigs",
+                "log10_n_proteins", "log10_n_genomes", "gc_content")
+  fam_idx <- which(coef_tab$model == "phyloglm" &
+                   !(coef_tab$term %in% nuisance) & is.finite(coef_tab$p))
+  if (length(fam_idx)) coef_tab[fam_idx, q_bh := p.adjust(p, method = "BH")]
+  message(sprintf("[phyloglm] BH over %d hypothesis coefficients (phyloglm family)",
+                  length(fam_idx)))
+}
+fwrite(coef_tab, out_coef, sep = "\t")
 fwrite(if (length(prevs)) rbindlist(prevs, use.names = TRUE, fill = TRUE)
        else emptydt(c("taxon","adjusted_prevalence","lo","hi","domain","n_species",
                       "n_genomes","raw_prevalence")),

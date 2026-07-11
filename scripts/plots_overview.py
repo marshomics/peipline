@@ -402,6 +402,18 @@ def main() -> None:
     if hits.empty:
         sys.exit("[plots] the combined hit table is empty; nothing to plot")
 
+    # These are the C71 overview panels. Scope to the C71-family profiles (PF12386
+    # + the shared SSF54001 fold net); a PF03412/C39 row is not part of the C71
+    # screen and would otherwise pollute the score, agreement, prevalence and
+    # funnel figures. No-op when PF03412 is disabled. A protein that hit both
+    # SSF54001 and PF03412 is kept via its SSF54001 row (correctly, as C71 ssf_only).
+    fam_of = {p: d.get("family") for p, d in cfg["profiles"].items()}
+    c71_profiles = {p for p, f in fam_of.items() if f in ("c71", None)}
+    if "profile" in hits.columns:
+        hits = hits[hits["profile"].isin(c71_profiles)].copy()
+        if hits.empty:
+            sys.exit("[plots] no C71-family hits to plot")
+
     fig_score_distributions(hits, a.figdir, fmts, dpi)
     fig_profile_agreement(hits, a.figdir, fmts, dpi)
     fig_coverage_length(hits, a.figdir, fmts, dpi)

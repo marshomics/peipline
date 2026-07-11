@@ -65,6 +65,7 @@ def _act(name):
 ENV_HMMER, ENV_PY, ENV_PHYLO = _act("hmmer"), _act("py"), _act("phylo")
 ENV_NET, ENV_PROD, ENV_R = _act("network"), _act("prodigal"), _act("r")
 ENV_SEL = _act("selection")
+ENV_STRUCT = _act("structure")   # optional; only the structure_search rule uses it
 
 if ENVS_ROOT:
     for _n in ("hmmer", "py", "phylo", "network", "prodigal", "r", "selection"):
@@ -95,6 +96,27 @@ if DISABLED_PROFILES:
           f"`rule pei_check`.", file=_sys.stderr)
 SPECIFIC      = config["specific_profile"]
 ALIGN_HMM     = os.path.join(WORK, "profiles", f"{config['align_profile']}.hmm")
+
+# --- the C39 arm ------------------------------------------------------------
+# PeiR and the CRISPRTarget viral Peis are PF03412 (MEROPS C39), not PF12386. They
+# cannot be aligned to the PF12386 scaffold or scored against the C71 Cys->His
+# prior (35; PeiR's is 72). The C39 arm is a PARALLEL specific arm: its own hits,
+# its own PF03412 alignment, its own triad columns learned with no borrowed prior,
+# its own c39.faa. It never feeds the C71 substrate-groove / Wang-partition / SDP /
+# selection analyses, whose coordinate systems are PeiW's. It is present only when
+# PF03412 is enabled; otherwise the DAG is byte-for-byte the single C71 arm.
+FAMS          = config.get("families") or {}
+C39           = FAMS.get("c39") or {}
+C39_ON        = bool((PROF.get("PF03412") or {}).get("enabled", False))
+# Always a string (never None): the c39 rules are DEFINED regardless, and are only
+# put in the DAG when c39_targets() is requested. A None input path would error at
+# rule-definition time even for an unused rule.
+ALIGN_HMM_C39 = os.path.join(WORK, "profiles",
+                             f"{C39.get('align_profile') or 'PF03412'}.hmm")
+if C39_ON:
+    sys.stderr.write("[c71] C39 arm ENABLED (PF03412): PeiR-class enzymes will be "
+                     "searched on their own scaffold. Per-family FDR, learned "
+                     "spacing; see report.md 'C39 arm'.\n")
 
 # --- Prodigal chunks are knowable at DAG time: the .fna already exist --------
 FNA = sorted(_glob.glob(IN["archaea_fna_glob"]))
@@ -141,6 +163,15 @@ def all_decoys(wildcards):
 SPEC = config["specificity"]
 
 
+def c39_targets():
+    """The C39 arm's deliverables, requested only when PF03412 is enabled."""
+    if not C39_ON:
+        return []
+    return [os.path.join(OUTDIR, "c39.faa"),
+            os.path.join(TABDIR, "triad_candidates_c39.tsv"),
+            os.path.join(TABDIR, "c39_evidence.tsv")]
+
+
 def specificity_targets():
     if not SPEC.get("enabled", False):
         return []
@@ -155,6 +186,8 @@ def specificity_targets():
          os.path.join(TABDIR, "assay_panel.tsv")]
     if SPEC["selection"].get("enabled", False):
         t.append(os.path.join(TABDIR, "selection_sites.tsv"))
+    if (SPEC.get("structure_search") or {}).get("enabled", False):
+        t.append(os.path.join(TABDIR, "structure_homology.tsv"))
     return t
 
 
@@ -171,6 +204,7 @@ rule all:
         os.path.join(TABDIR, "barcode_coupling.tsv"),
         os.path.join(TABDIR, "phyloglm_coefficients.tsv"),
         specificity_targets(),
+        c39_targets(),
         os.path.join(FIGDIR, ".overview.done"),
         os.path.join(FIGDIR, ".tree.done"),
         os.path.join(FIGDIR, ".activesite.done"),
@@ -338,11 +372,17 @@ rule extract_hits:
     output:
         faa=os.path.join(WORK, "hits.faa"),
         idmap=os.path.join(WORK, "hits_idmap.tsv.gz"),
+    params:
+        cfg=CFG,
     threads: 8
     conda: "envs/py.yaml"
     log: os.path.join(LOGDIR, "extract_hits.log")
     shell:
+        # --family c71 excludes PF03412-only proteins from the C71 arm. It is a
+        # no-op when PF03412 is disabled (nothing hits it), and the one thing that
+        # keeps C39 hits off the PF12386 scaffold when it is enabled.
         "{ENV_PY}python {SCRIPTS}/extract_seqs.py --hits {input.combined} "
+        "--family c71 --config {params.cfg} "
         "--out-faa {output.faa} --out-idmap {output.idmap} --threads {threads} &> {log}"
 
 
@@ -401,6 +441,7 @@ rule triad:
     log: os.path.join(LOGDIR, "triad.log")
     shell:
         "{ENV_PY}python {SCRIPTS}/triad_detect_filter.py --sto {input.sto} --config {params.cfg} "
+        "--family c71 "
         "--combined {input.combined} --idmap {input.idmap} --weights {input.weights} "
         "--out-candidates {output.cands} --out-chosen {output.chosen} "
         "--out-keep {output.keep} --out-afa {output.afa} "
@@ -418,6 +459,132 @@ rule c71_faa:
     threads: 8
     conda: "envs/py.yaml"
     log: os.path.join(LOGDIR, "c71_faa.log")
+    shell:
+        "{ENV_PY}python {SCRIPTS}/extract_seqs.py --keep-ids {input.keep} --idmap {input.idmap} "
+        "--out-faa {output.faa} --out-evidence {output.evidence} "
+        "--threads {threads} &> {log}"
+
+
+# ===========================================================================
+# 8b. The C39 arm, in parallel and self-contained. Same shape as the C71 arm
+#     (extract -> weights -> align -> triad -> faa) but scoped to PF03412, aligned
+#     to the PF03412 scaffold, and with the spacing LEARNED, not borrowed. Every
+#     rule tolerates an empty net: PF03412 across 350k proteomes is mostly
+#     bacteriocin exporters, and a zero-Pei result must not abort the whole run.
+#     These rules are in the DAG only when c39_targets() is requested (PF03412
+#     enabled). See config.yaml `profiles.PF03412` and `families.c39`.
+# ===========================================================================
+rule extract_hits_c39:
+    input:
+        combined=COMBINED,
+    output:
+        faa=os.path.join(WORK, "hits_c39.faa"),
+        idmap=os.path.join(WORK, "hits_c39_idmap.tsv.gz"),
+    params:
+        cfg=CFG,
+    threads: 8
+    conda: "envs/py.yaml"
+    log: os.path.join(LOGDIR, "extract_hits_c39.log")
+    shell:
+        "{ENV_PY}python {SCRIPTS}/extract_seqs.py --hits {input.combined} "
+        "--family c39 --config {params.cfg} "
+        "--out-faa {output.faa} --out-idmap {output.idmap} --threads {threads} &> {log}"
+
+
+rule seq_weights_c39:
+    input:
+        faa=os.path.join(WORK, "hits_c39.faa"),
+    output:
+        weights=os.path.join(TABDIR, "sequence_weights_c39.tsv"),
+    params:
+        cfg=CFG, tmp=os.path.join(WORK, "weights_c39_tmp"),
+    threads: 8
+    conda: "envs/phylo.yaml"
+    log: os.path.join(LOGDIR, "seq_weights_c39.log")
+    shell:
+        # mmseqs chokes on an empty FASTA; a zero-hit C39 net writes a header-only
+        # weights file so the DAG completes. triad_c39 exits before reading it.
+        """
+        {ENV_PHYLO}
+        if [ -s {input.faa} ]; then
+            python {SCRIPTS}/seq_weights.py --faa {input.faa} --config {params.cfg} \
+                --tmpdir {params.tmp} --threads {threads} --out {output.weights} &> {log}
+        else
+            printf 'seq_id\\tweight\\tcluster\\tcluster_size\\n' > {output.weights}
+            echo "[seq_weights_c39] empty C39 net; wrote header-only weights" > {log}
+        fi
+        """
+
+
+rule hmmalign_c39:
+    input:
+        faa=os.path.join(WORK, "hits_c39.faa"),
+        hmm=ALIGN_HMM_C39,
+    output:
+        sto=os.path.join(WORK, "hits_c39.sto"),
+    params:
+        trim="--trim" if config["hmmalign_trim"] else "",
+    conda: "envs/hmmer.yaml"
+    log: os.path.join(LOGDIR, "hmmalign_c39.log")
+    shell:
+        # hmmalign errors on empty input; emit an empty .sto and let triad_c39's
+        # --allow-empty-specific handle it.
+        """
+        {ENV_HMMER}
+        if [ -s {input.faa} ]; then
+            hmmalign {params.trim} --amino --outformat Stockholm \
+                -o {output.sto} {input.hmm} {input.faa} &> {log}
+        else
+            : > {output.sto}
+            echo "[hmmalign_c39] empty C39 net; wrote empty alignment" > {log}
+        fi
+        """
+
+
+rule triad_c39:
+    """C39 catalytic-triad columns, learned with NO borrowed prior.
+
+    The C71 gap-35 prior would reject PeiR (gap 72). This arm ranks C/H/D columns
+    by redundancy-weighted frequency with i<j<k and reports the spacing it found.
+    Its FDR and pass rate are C39's, never pooled with C71's.
+    """
+    input:
+        sto=os.path.join(WORK, "hits_c39.sto"),
+        combined=COMBINED,
+        idmap=os.path.join(WORK, "hits_c39_idmap.tsv.gz"),
+        weights=os.path.join(TABDIR, "sequence_weights_c39.tsv"),
+    output:
+        cands=os.path.join(TABDIR, "triad_candidates_c39.tsv"),
+        chosen=os.path.join(TABDIR, "triad_columns_c39.json"),  # TABDIR: the report reads it
+        keep=os.path.join(WORK, "triad_pass_ids_c39.txt"),
+        afa=os.path.join(WORK, "triad_pass_matchcols_c39.afa"),
+        colstats=os.path.join(TABDIR, "alignment_column_stats_c39.tsv"),
+        tiers=os.path.join(TABDIR, "triad_filter_by_tier_c39.tsv"),
+        outcomes=os.path.join(TABDIR, "triad_outcomes_c39.tsv"),
+    params:
+        cfg=CFG,
+    conda: "envs/py.yaml"
+    log: os.path.join(LOGDIR, "triad_c39.log")
+    shell:
+        "{ENV_PY}python {SCRIPTS}/triad_detect_filter.py --sto {input.sto} --config {params.cfg} "
+        "--family c39 --allow-empty-specific "
+        "--combined {input.combined} --idmap {input.idmap} --weights {input.weights} "
+        "--out-candidates {output.cands} --out-chosen {output.chosen} "
+        "--out-keep {output.keep} --out-afa {output.afa} "
+        "--out-colstats {output.colstats} --out-tiers {output.tiers} "
+        "--out-outcomes {output.outcomes} &> {log}"
+
+
+rule c39_faa:
+    input:
+        keep=os.path.join(WORK, "triad_pass_ids_c39.txt"),
+        idmap=os.path.join(WORK, "hits_c39_idmap.tsv.gz"),
+    output:
+        faa=os.path.join(OUTDIR, "c39.faa"),
+        evidence=os.path.join(TABDIR, "c39_evidence.tsv"),
+    threads: 8
+    conda: "envs/py.yaml"
+    log: os.path.join(LOGDIR, "c39_faa.log")
     shell:
         "{ENV_PY}python {SCRIPTS}/extract_seqs.py --keep-ids {input.keep} --idmap {input.idmap} "
         "--out-faa {output.faa} --out-evidence {output.evidence} "
@@ -707,6 +874,30 @@ rule pei_check:
         "--out {output.table} --strict &> {log}"
 
 
+rule structure_search:
+    """Structure-based confirmation of PM genes in divergent, out-of-order hosts.
+
+    Fold outlives sequence: ESMFold -> Foldseek -> HHsearch against the PM
+    references, for the candidates the marker screen surfaced. OFF by default and
+    gated on staged weights/DBs (offline cluster). NOT executed in development;
+    the parsers are unit-tested, the run is not. Needs the `structure` env, which
+    is optional and not built by the default setup scripts.
+    """
+    input:
+        cellwall=os.path.join(TABDIR, "cellwall_genotype.tsv"),
+    output:
+        table=os.path.join(TABDIR, "structure_homology.tsv"),
+    params:
+        cfg=CFG, workdir=os.path.join(WORK, "structure"),
+    threads: 16
+    conda: "envs/structure.yaml"
+    log: os.path.join(LOGDIR, "structure_search.log")
+    shell:
+        "{ENV_STRUCT}python {SCRIPTS}/structure_search.py --config {params.cfg} "
+        "--cellwall {input.cellwall} --workdir {params.workdir} "
+        "--out {output.table} --threads {threads} &> {log}"
+
+
 rule lysis_check:
     """Score the host-chemistry rule against the measured lysis panel.
 
@@ -909,6 +1100,15 @@ rule report:
         coefs=os.path.join(TABDIR, "phyloglm_coefficients.tsv"),
         dstat=os.path.join(TABDIR, "phylogenetic_signal_D.tsv"),
         tips=os.path.join(TABDIR, "tree_tip_matching.tsv"),
+        # only when the C39 arm is on: makes the report wait for it and include
+        # the C39 section. Empty list otherwise, so the single-arm DAG is unchanged.
+        c39=([os.path.join(TABDIR, "triad_columns_c39.json")] if C39_ON else []),
+        # make_report reads several specificity tables (domain_architecture,
+        # cellwall_genotype, lysis_reference_check, groove_definition) by path.
+        # Declaring the whole specificity block as an input orders it before the
+        # report and forces a rebuild when any of it changes, so a section can no
+        # longer be silently stale or dropped. Empty when the block is disabled.
+        spec=(specificity_targets() if SPEC.get("enabled", False) else []),
     output:
         md=os.path.join(OUTDIR, "report.md"),
     params:

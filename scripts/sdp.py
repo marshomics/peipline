@@ -253,6 +253,10 @@ def main() -> None:
 
     wdf = pd.read_csv(a.weights, sep="\t").set_index("seq_id")
     w = wdf["weight"].reindex(names).to_numpy(float)
+    if np.isnan(w).any():
+        sys.exit(f"[sdp] {int(np.isnan(w).sum())} aligned sequences have no "
+                 f"redundancy weight; a NaN weight would silently poison every "
+                 f"weighted MI. Check that sequence_weights.tsv covers the .afa.")
     cluster = wdf["cluster"].reindex(names)
 
     assign = pd.read_csv(a.assign, sep="\t", dtype={"seq_id": str}).set_index("seq_id")
@@ -498,7 +502,7 @@ def main() -> None:
     if n_shell == 0:
         print("[sdp] no metal shell in the structure, so no metal-shell "
               "enrichment test. PeiW and PeiP both need a divalent cation and "
-              "differ in which ones work (Subedi et al. 2015); the site is "
+              "differ in which ones work (Schofield et al. 2015); the site is "
               "simply not resolved in the deposited coordinates.",
               file=sys.stderr)
         summary.update({"n_metal_shell_columns": 0,

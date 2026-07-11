@@ -150,6 +150,11 @@ def main() -> None:
                            "min_match_fraction": 0.50}
     cfg["profiles"]["PF12386"]["path"] = os.path.join(base, "hmms", "PF12386.hmm")
     cfg["profiles"]["SSF54001"]["path"] = os.path.join(base, "hmms", "SSF54001.hmm")
+    # This end-to-end fixture exercises the C71 single arm and builds only PF12386 +
+    # SSF54001 models. The C39 arm has its own test (test_c39_arm.py); pin PF03412
+    # off here so combine_filter does not look for domtblout the fixture never made.
+    if "PF03412" in cfg["profiles"]:
+        cfg["profiles"]["PF03412"]["enabled"] = False
     cfg["outputs"].update(hmm_output_dir=hmmout, outdir=outdir, workdir=work,
                           prodigal_dir=prod,
                           combined_table=os.path.join(base, "hmm_output_combine.txt"),
@@ -408,7 +413,7 @@ def main() -> None:
           f"coupling called too many unplanted pairs ({sig_other})")
 
     check(ssn["ssn_cluster_size"].max() >= 2, "SSN degenerated to all singletons")
-    print(f"convergence:\n{conv[['subgroup','observed_origins','null_random_mean','fritz_purvis_D']].to_string(index=False)}")
+    print(f"convergence:\n{conv[['subgroup','parsimony_changes','null_random_mean','clustering_index']].to_string(index=False)}")
     print(f"ssn: {ssn['ssn_cluster'].nunique()} clusters over {len(ssn)} nodes")
 
     nsvg = len([f for f in os.listdir(figdir) if f.endswith(".svg")])

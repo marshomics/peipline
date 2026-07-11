@@ -105,8 +105,8 @@ def main() -> None:
 
     rowA = dA[dA["subgroup"] == "evidence:ssf_only"]
     check(len(rowA) == 1, "the evidence trait must appear in convergence.tsv")
-    dA_val = float(rowA.iloc[0]["fritz_purvis_D"])
-    origins_A = int(rowA.iloc[0]["observed_origins"])
+    dA_val = float(rowA.iloc[0]["clustering_index"])
+    origins_A = int(rowA.iloc[0]["parsimony_changes"])
     check(origins_A == 1, f"a contiguous clade must have 1 origin, got {origins_A}")
     check(dA_val < 0.25, f"a clade must give D < 0.25, got {dA_val}")
     check("own lineage" in rowA.iloc[0]["interpretation"],
@@ -124,8 +124,8 @@ def main() -> None:
                               f"{rB.stderr[-800:]}")
     rowB = dB[dB["subgroup"] == "evidence:ssf_only"]
     check(len(rowB) == 1, "the evidence trait must appear in convergence.tsv")
-    dB_val = float(rowB.iloc[0]["fritz_purvis_D"])
-    origins_B = int(rowB.iloc[0]["observed_origins"])
+    dB_val = float(rowB.iloc[0]["clustering_index"])
+    origins_B = int(rowB.iloc[0]["parsimony_changes"])
     check(origins_B == 8, f"8 scattered tips must give 8 origins, got {origins_B}")
     check(dB_val > dA_val,
           f"scattered tips must give a higher D than a clade: {dB_val} vs {dA_val}")

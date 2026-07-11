@@ -16,7 +16,9 @@ def _opener(path: str):
 
 def read_fasta(path: str) -> Iterator[Tuple[str, str]]:
     """Yield (header, sequence). Header is everything after '>' minus newline."""
-    with _opener(path)(path, "rt") as fh:
+    # errors="replace": a single non-ASCII byte in a header on a LANG=C cluster
+    # node must not crash a 350k-proteome read. Sequences are ASCII by construction.
+    with _opener(path)(path, "rt", encoding="utf-8", errors="replace") as fh:
         name, buf = None, []
         for line in fh:
             if line.startswith(">"):
@@ -104,7 +106,7 @@ _N_FIXED = 22  # fields before the free-text description
 def parse_domtblout(path: str) -> Iterator[dict]:
     """Stream a --domtblout file. Whitespace-delimited, 22 fixed fields then a
     free-text description, so split with maxsplit rather than str.split()."""
-    with _opener(path)(path, "rt") as fh:
+    with _opener(path)(path, "rt", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             if not line.strip() or line.startswith("#"):
                 continue

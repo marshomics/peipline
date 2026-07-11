@@ -104,7 +104,10 @@ def candidates(freq, occ, res, min_occ, min_freq, cap):
     idx = np.where((f >= min_freq) & (occ >= min_occ))[0]
     if idx.size == 0:
         return np.array([], dtype=int)
-    return idx[np.argsort(-f[idx])][:cap]
+    # stable sort: ties in weighted frequency must break deterministically (by
+    # column index), or which columns survive `cap` is platform-dependent and the
+    # chosen catalytic triad -- a published result -- is not reproducible.
+    return idx[np.argsort(-f[idx], kind="stable")][:cap]
 
 
 def score_triples(freq, c1, c2, c3, r1, r2, r3, g12, g23, tol, w):
@@ -117,6 +120,44 @@ def score_triples(freq, c1, c2, c3, r1, r2, r3, g12, g23, tol, w):
         out.append((float(s), int(i), int(j), int(k), float(pen)))
     out.sort(key=lambda t: -t[0])
     return out
+
+
+def _write_empty(a, specific_profile, family, learn_spacing, why):
+    """Write valid, empty outputs when a family arm's specific tier is empty.
+
+    The C39 net (PF03412) can legitimately return zero Pei-grade hits across a set
+    of proteomes. That must not abort the whole run, and it must not leave half-
+    written tables that the report then misreads. Every output gets its header and
+    nothing else; `chosen.json` records WHY, so the report can say 'the C39 arm ran
+    and found nothing' rather than staying silent.
+    """
+    for p in (a.out_candidates, a.out_colstats, a.out_tiers, a.out_outcomes,
+              a.out_chosen, a.out_keep, a.out_afa):
+        if p:
+            os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+    with open(a.out_candidates, "w") as fh:
+        fh.write("rank\thypothesis\tscore\tcol_1\tcol_2\tcol_3\tres_1\tres_2\tres_3\t"
+                 "freq_1\tfreq_2\tfreq_3\tocc_1\tocc_2\tocc_3\tgap_1_2\tgap_2_3\t"
+                 "spacing_penalty\tn_specific_with_triad\tfrac_specific\n")
+    with open(a.out_colstats, "w") as fh:
+        fh.write("match_col\toccupancy\tentropy_bits\t" +
+                 "\t".join(f"freq_{aa}" for aa in AA20) + "\n")
+    pd.DataFrame(columns=[
+        "evidence", "n_aligned", "n_testable", "n_low_coverage", "n_gapped_at_triad",
+        "n_triad_negative", "n_negative_with_all_three_residues", "n_triad_positive",
+        "frac_triad_positive_of_testable", "frac_testable", "effective_n_aligned",
+        "effective_n_triad_positive"]).to_csv(a.out_tiers, sep="\t", index=False)
+    if a.out_outcomes:
+        pd.DataFrame(columns=["seq_id", "evidence", "match_coverage", "outcome"]
+                     ).to_csv(a.out_outcomes, sep="\t", index=False)
+    with open(a.out_chosen, "w") as fh:
+        json.dump({"source": "empty", "family": family,
+                   "specific_profile": specific_profile,
+                   "spacing_mode": "learned" if learn_spacing else "prior",
+                   "match_columns": None, "n_triad_positive": 0,
+                   "n_input_sequences": 0, "note": why}, fh, indent=2)
+    open(a.out_keep, "w").close()
+    open(a.out_afa, "w").close()
 
 
 def main() -> None:
@@ -134,15 +175,61 @@ def main() -> None:
     ap.add_argument("--out-tiers", required=True)
     ap.add_argument("--out-outcomes", default=None,
                     help="per-sequence outcome: why each sequence was kept or dropped")
+    ap.add_argument("--family", default="c71",
+                    help="which family arm this alignment belongs to. Selects the "
+                         "specific profile that defines the tier and decides whether "
+                         "the Cys->His/His->Asp spacing is a fixed prior (c71) or is "
+                         "learned from the hits (c39, where one sequence is not a "
+                         "prior). Default c71 reproduces the single-arm behaviour.")
+    ap.add_argument("--allow-empty-specific", action="store_true",
+                    help="write empty outputs and exit 0 if no sequence cleared the "
+                         "family's specific profile, instead of failing. For the C39 "
+                         "arm, whose PF03412 net may return nothing but must not abort "
+                         "the whole run.")
     a = ap.parse_args()
 
     full = load_config(a.config)
     cfg = full["triad"]
+
+    # --- which family arm, and where its spacing prior comes from -------------
+    # C71 owns a fixed Cys->His/His->Asp prior (PeiW/PeiP; see the `triad:` block).
+    # C39 owns none: PeiR is the only C39 Pei with an assigned catalytic residue
+    # (C90), and its His was never assigned, so one sequence cannot seed a prior.
+    # The C39 arm therefore ranks columns by residue frequency alone (i<j<k) and
+    # REPORTS the spacing it found rather than scoring against a target. Borrowing
+    # the C71 gap of 35 would reject PeiR, whose gap is 72; `pei_check` refuses to
+    # start such a run, and this is the code path that keeps that refusal honest.
+    fam = (full.get("families") or {}).get(a.family, {})
+    specific_profile = fam.get("specific_profile") or full["specific_profile"]
+    learn_spacing = bool(fam) and fam.get("expected_gap_1_2") is None
+    if learn_spacing:
+        g12_target, g23_target, spacing_w = 0, 0, 0.0   # no prior; frequency only
+        spacing_tol = float(cfg["spacing_tolerance"])
+    else:
+        g12_target = cfg["expected_gap_1_2"]
+        g23_target = cfg["expected_gap_2_3"]
+        spacing_tol = float(cfg["spacing_tolerance"])
+        spacing_w = cfg["spacing_weight"]
     for p in (a.out_candidates, a.out_chosen, a.out_keep, a.out_afa, a.out_colstats,
               a.out_tiers, a.out_outcomes):
         if p is None:
             continue
         os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+
+    # An empty family net (PF03412 returning nothing) produces an empty or
+    # header-only Stockholm. hmmalign cannot emit an RF line for zero sequences,
+    # so load_matrix would abort. Catch it here when the arm is allowed to be empty.
+    if a.allow_empty_specific:
+        try:
+            _order, _seqs, _rf = read_stockholm(a.sto)
+        except Exception:
+            _order, _rf = [], ""
+        if not _order or not _rf or not match_columns(_rf):
+            why = f"family={a.family}: alignment has no match states/sequences"
+            _write_empty(a, specific_profile, a.family, learn_spacing, why)
+            print(f"[triad] {why}; --allow-empty-specific: wrote empty outputs, "
+                  f"exiting 0.", file=sys.stderr)
+            return
 
     names, arr = load_matrix(a.sto)
     n, L = arr.shape
@@ -163,12 +250,18 @@ def main() -> None:
 
     specific_mask = (evidence.to_numpy() == "specific")
     n_spec = int(specific_mask.sum())
-    print(f"[triad] {n} aligned sequences x {L} match columns; "
-          f"{n_spec} specific ({full['specific_profile']}), {n - n_spec} ssf_only",
-          file=sys.stderr)
+    print(f"[triad] family={a.family}: {n} aligned sequences x {L} match columns; "
+          f"{n_spec} specific ({specific_profile}), {n - n_spec} ssf_only; "
+          f"spacing={'learned' if learn_spacing else 'prior'}", file=sys.stderr)
     if n_spec == 0:
-        sys.exit(f"[triad] no sequence cleared {full['specific_profile']}. "
-                 f"There is nothing to learn the triad columns from.")
+        msg = (f"[triad] no sequence cleared {specific_profile}. There is nothing "
+               f"to learn the triad columns from.")
+        if a.allow_empty_specific:
+            _write_empty(a, specific_profile, a.family, learn_spacing, msg)
+            print(msg + " --allow-empty-specific: wrote empty outputs, exiting 0.",
+                  file=sys.stderr)
+            return
+        sys.exit(msg)
 
     learn = specific_mask if cfg.get("restrict_to_specific", True) else np.ones(n, bool)
     occ, freq, ent = weighted_stats(arr[learn], w[learn])
@@ -184,13 +277,27 @@ def main() -> None:
     thirds = [cfg["third_residue"]] + ([cfg["alt_third_residue"]]
                                        if cfg.get("alt_third_residue") else [])
 
+    def _maybe_empty(why):
+        """A near-empty family net (a handful of PF03412 hits with no clean CHD)
+        must not abort the whole run when --allow-empty-specific is set. Returns
+        True if it wrote empty outputs and the caller should return."""
+        if a.allow_empty_specific:
+            _write_empty(a, specific_profile, a.family, learn_spacing, why)
+            print(f"[triad] {why}; --allow-empty-specific: wrote empty outputs, "
+                  f"exiting 0.", file=sys.stderr)
+            return True
+        return False
+
     c1 = candidates(freq, occ, r1, cfg["min_occupancy"], cfg["min_residue_freq"],
                     cfg["max_candidates_per_residue"])
     c2 = candidates(freq, occ, r2, cfg["min_occupancy"], cfg["min_residue_freq"],
                     cfg["max_candidates_per_residue"])
     if c1.size == 0 or c2.size == 0:
-        sys.exit(f"[triad] no candidate columns for {r1} or {r2} at "
-                 f"min_residue_freq={cfg['min_residue_freq']}.")
+        why = (f"family={a.family}: no candidate columns for {r1} or {r2} at "
+               f"min_residue_freq={cfg['min_residue_freq']}")
+        if _maybe_empty(why):
+            return
+        sys.exit(f"[triad] {why}.")
 
     ranked = {}
     with open(a.out_candidates, "w") as fh:
@@ -205,8 +312,7 @@ def main() -> None:
                       file=sys.stderr)
                 continue
             trips = score_triples(freq, c1, c2, c3, r1, r2, r3,
-                                  cfg["expected_gap_1_2"], cfg["expected_gap_2_3"],
-                                  cfg["spacing_tolerance"], cfg["spacing_weight"])
+                                  g12_target, g23_target, spacing_tol, spacing_w)
             if not trips:
                 continue
             ranked[f"{r1}{r2}{r3}"] = trips[0]
@@ -220,7 +326,10 @@ def main() -> None:
                          f"{pen:.4f}\t{hits}\t{hits / len(sub):.4f}\n")
 
     if not ranked:
-        sys.exit("[triad] no triple satisfied the candidate criteria.")
+        why = f"family={a.family}: no C/H/D triple satisfied the candidate criteria"
+        if _maybe_empty(why):
+            return
+        sys.exit(f"[triad] {why}.")
 
     override = cfg.get("override_columns")
     if override:
@@ -261,10 +370,23 @@ def main() -> None:
     gapped = ((arr[:, i] == GAP) | (arr[:, j] == GAP) | (arr[:, k] == GAP))
     low_cov = coverage < min_cov
 
-    mask = (arr[:, i] == ord(r1)) & (arr[:, j] == ord(r2)) & (arr[:, k] == ord(r3))
+    # A confident positive needs the triad residues at the three columns AND
+    # enough of the profile occupied to trust the placement. A fragment that lands
+    # C/H/D on three columns but covers < min_match_coverage of the match states
+    # was not really placed by hmmalign; it is `low_coverage`, not a Pei. Gating
+    # the call on ~low_cov (rather than asserting the situation impossible, which
+    # it is NOT -- coverage counts all L columns, the triad is only 3) is what
+    # keeps a fragment out of c71.faa and stops the run-ending assertion below from
+    # firing on real data.
+    triad_residues = ((arr[:, i] == ord(r1)) & (arr[:, j] == ord(r2)) &
+                      (arr[:, k] == ord(r3)))
+    mask = triad_residues & ~low_cov & ~gapped
     n_keep = int(mask.sum())
     if n_keep == 0:
-        sys.exit(f"[triad] chosen columns {(i, j, k)} retain zero sequences.")
+        why = f"family={a.family}: chosen columns {(i, j, k)} retain zero sequences"
+        if _maybe_empty(why):
+            return
+        sys.exit(f"[triad] {why}.")
 
     # The residual hole, stated rather than papered over. A permuted core that
     # happens to occupy all three columns with the wrong residues is scored
@@ -358,9 +480,18 @@ def main() -> None:
 
     chosen = {
         "source": source,
+        "family": a.family,
+        "specific_profile": specific_profile,
+        # 'prior' -> scored against the C71 Cys->His/His->Asp targets; 'learned' ->
+        # ranked by residue frequency alone and the spacing below is what was FOUND,
+        # not what was assumed. The C39 arm is always 'learned': PeiR (C90, His
+        # unassigned) is one sequence, and one sequence is not a prior.
+        "spacing_mode": "learned" if learn_spacing else "prior",
+        "spacing_prior_gaps": (None if learn_spacing else [g12_target, g23_target]),
+        "learned_gaps": ([int(j - i), int(k - j)] if learn_spacing else None),
         "residues": [r1, r2, r3],
         "match_columns": [i, j, k],
-        "learned_from": full["specific_profile"] if cfg.get("restrict_to_specific", True) else "all",
+        "learned_from": specific_profile if cfg.get("restrict_to_specific", True) else "all",
         "n_learning_sequences": int(learn.sum()),
         "effective_n_learning": float(w[learn].sum()),
         "residue_frequencies": [float(freq[r1][i]), float(freq[r2][j]), float(freq[r3][k])],

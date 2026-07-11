@@ -20,9 +20,13 @@ Three consequences, each of which breaks something that used to be in this repo:
   2. The catalytic-triad spacing prior does not transfer. In C71 the Cys->His gap
      is 35 (PeiW C198/H233, PeiP C213/H248). PeiR's catalytic cysteine is C90
      (established by the C90A mutant, PDB 8Z4N) and residue 125 -- C90+35 -- is a
-     proline. The nearest downstream histidine is H162, a gap of 72. Applying the
-     C71 prior to a C39 sequence rejects the one Pei with a solved structure that
-     lyses a rumen methanogen.
+     proline. NO histidine sits at the C71 distance: PeiR's downstream histidines
+     are at 104, 162, 181 and 192 (gaps 14, 72, 91, 102 from C90), and none falls
+     within 35+/-8. PeiR's catalytic histidine has NOT been assigned experimentally,
+     so there is no established Cys->His gap; the point is only that the C71 prior
+     of 35 matches none of PeiR's histidines and so would reject it.
+     `peir_his_candidates()` recomputes these gaps from the stored sequence and
+     `pei_check` prints them, so this claim is checkable, not asserted.
 
   3. PeiR has zero PMB motifs and lyses cells. `pmbr_binding_competent == 0` is
      therefore NOT a prediction that a protein cannot lyse. The Visweswaran 2011
@@ -41,14 +45,14 @@ Substrate caution
 -----------------
 PeiG2*, PeiTh2* and PeiF3* were reported unable to cleave L-Ala-pNA yet able to
 lyse Methanobrevibacter sp. AbM4. That is not evidence they lack the activity.
-Subedi et al. 2015 showed Ala-pNA is a poor substrate for PeiW and PeiP as well:
+Schofield et al. 2015 showed Ala-pNA is a poor substrate for PeiW and PeiP as well:
 the P2 glutamate supplies most of the binding energy, and the alanine dipeptide is
 too small to engage S2. A negative on Ala-pNA is uninformative about any Pei.
 """
 from __future__ import annotations
 
 CITATIONS = {
-    "PeiW/PeiP": "Steenbakkers et al. 2001, FEMS Microbiol Lett 208:47-53",
+    "PeiW/PeiP": "Luo et al. 2002, FEMS Microbiol Lett 208:47-51 (PeiW/PeiP naming); Schofield et al. 2015 (biochemistry)",
     "PeiR": ("Leahy et al. 2010, PLoS ONE 5:e8926 (genome); PDB 8Z4H, 8Z4N "
              "(Guo, Wang & Bai 2024)"),
     "structures": ("Wang et al. 2025, Int J Biol Macromol "
@@ -57,7 +61,7 @@ CITATIONS = {
                   "pseudomurein endoisopeptidase proteins from methanogens "
                   "(CRISPRTarget study; 21 candidates, 3 active)"),
     "binding": "Visweswaran, Dijkstra & Kok 2011, PLoS ONE 6:e21582",
-    "substrates": "Subedi et al. 2015, Archaea 2015:828693",
+    "substrates": "Schofield et al. 2015, Archaea 2015:828693",
 }
 
 # PeiR, verbatim from UniProt D3DZZ6. Kept here because every claim below about

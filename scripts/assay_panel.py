@@ -22,7 +22,7 @@ Which assay to ask for, and why it is not the obvious one
 Two substrate formats exist for this family and they do not measure the same
 thing.
 
-  pNA dipeptides  Glu-gamma-Ala-pNA and relatives (Subedi et al. 2015). Cheap,
+  pNA dipeptides  Glu-gamma-Ala-pNA and relatives (Schofield et al. 2015). Cheap,
                   continuous, spectrophotometric. The p-nitroanilide leaving
                   group sits where the acyl acceptor belongs, so S1' is EMPTY.
 
@@ -32,11 +32,11 @@ thing.
 They disagree about threonine at P1, and the disagreement is the most useful fact
 in this file:
 
-  Subedi:  Glu-gamma-Thr-pNA  -> no detectable activity, PeiW or PeiP.
+  Schofield:  Glu-gamma-Thr-pNA  -> no detectable activity, PeiW or PeiP.
            This substrate EXISTS. JPT synthesised it and both enzymes were
            assayed against it. An earlier version of this script asserted that no
            Thr-pNA had ever been made. That was wrong.
-  Subedi:  M. ruminantium M1, Thr at P1 -> not lysed by either enzyme.
+  Schofield:  M. ruminantium M1, Thr at P1 -> not lysed by either enzyme.
   Wang:    Glu-gamma-Thr-epsilon-Lys -> cleaved by PeiW, barely by PeiP.
 
 The two reconcile if S1 and S1' are coupled: PeiW's S1 accommodates the extra
@@ -138,7 +138,7 @@ def maxmin(X, n, seed_idx):
 # What has actually been synthesised and measured, so the panel asks for
 # experiments that exist rather than experiments that sound plausible.
 #
-# Subedi et al. 2015, chromogenic series (S1' empty, pNA in the acceptor site):
+# Schofield et al. 2015, chromogenic series (S1' empty, pNA in the acceptor site):
 #   EgammaA-pNA  active     both enzymes; the reference substrate
 #   EA-pNA       active     the Glu-Ala bond need not be a gamma-isopeptide
 #   EgammaS-pNA  active     Ser substitutes for Ala at P1
@@ -185,7 +185,7 @@ P1P_PREDICTION = {
 # Everything else needs an acceptor in S1'.
 PNA_VALID_P1 = {"Ala", "Ser"}
 
-# Subedi et al. 2015. PeiW is rescued from EDTA by all five; PeiP by Ca alone.
+# Schofield et al. 2015. PeiW is rescued from EDTA by all five; PeiP by Ca alone.
 # The panel asks for the full series on every protein, because a second
 # Ca-strict enzyme, or a Mg-tolerant one, would be the first structural handle on
 # a site that no one has located.
@@ -252,7 +252,7 @@ def main() -> None:
     meta["n_pmbr"] = meta["seq_id"].map(arch["n_pmbr"]).fillna(0).astype(int)
     meta["architecture_class"] = meta["seq_id"].map(arch["architecture_class"])
     for col in ("pmbr_binding_competent", "predicted_binding", "pmbr_pi",
-                "pmbr_count_fragile", "assay_ph"):
+                "pmbr_count_fragile", "assay_ph", "pmbr_rule_applies"):
         meta[col] = meta["seq_id"].map(arch[col]) if col in arch.columns else pd.NA
     meta["accessory"] = meta["seq_id"].map(arch["accessory_binding_domains"]).fillna("")
     meta["subgroup"] = meta["seq_id"].map(assign["subgroup"])
